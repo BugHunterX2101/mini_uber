@@ -6,6 +6,7 @@ import { API_BASE_URL } from "../config";
 export default function Login({ onLogin }) {
   const navigate = useNavigate();
   const [userType, setUserType] = useState("user");
+  const [adminPassword, setAdminPassword] = useState("");
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -13,25 +14,25 @@ export default function Login({ onLogin }) {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
+  const [userCoords, setUserCoords] = useState(null);
 
   const getCurrentLocation = async () => {
     setIsGettingLocation(true);
     
     try {
-      // Get user's current position with high precision
       const position = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
           enableHighAccuracy: true,
           timeout: 15000,
-          maximumAge: 0  // Always get fresh location
+          maximumAge: 0
         });
       });
 
       const { latitude, longitude } = position.coords;
+      setUserCoords({ lat: latitude, lng: longitude });
       
-      // Format as readable location
       const locationStr = `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}`;
-      setFormData(prev => ({ ...prev, location: locationStr }))
+      setFormData(prev => ({ ...prev, location: locationStr }));
     } catch (error) {
       console.error('Error getting location:', error);
       alert('Unable to get your location. Please enter it manually.');
@@ -45,7 +46,21 @@ export default function Login({ onLogin }) {
     setIsLoading(true);
     
     try {
-      if (userType === "driver") {
+      if (userType === "admin") {
+        if (adminPassword === "admin123") {
+          const userData = {
+            type: "admin",
+            name: formData.name,
+            email: formData.email
+          };
+          onLogin(userData);
+          navigate('/admin');
+        } else {
+          alert("Invalid admin password");
+          setIsLoading(false);
+          return;
+        }
+      } else if (userType === "driver") {
         const response = await axios.post(`${API_BASE_URL}/register-driver`, null, {
           params: {
             name: formData.name,
@@ -79,7 +94,8 @@ export default function Login({ onLogin }) {
           type: "user",
           id: response.data.user_id,
           name: formData.name,
-          email: formData.email
+          email: formData.email,
+          location: userCoords
         };
         onLogin(userData);
         navigate('/user');
@@ -149,7 +165,7 @@ export default function Login({ onLogin }) {
 
             {/* Professional Role Selector */}
             <div className="mb-6 sm:mb-8 md:mb-10">
-              <div className="grid grid-cols-2 gap-3 sm:gap-4 md:gap-6">
+              <div className="grid grid-cols-3 gap-3 sm:gap-4 md:gap-6">
                 <button
                   type="button"
                   onClick={() => setUserType("user")}
@@ -213,6 +229,38 @@ export default function Login({ onLogin }) {
                     </div>
                   )}
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setUserType("admin")}
+                  className={`relative p-8 rounded-2xl border-2 transition-all duration-500 transform hover:scale-110 ${
+                    userType === "admin"
+                      ? "border-purple-400 bg-gradient-to-br from-purple-500/20 to-pink-600/20 shadow-2xl scale-105"
+                      : "border-white/20 bg-white/5 hover:border-purple-400/50 hover:bg-purple-500/10"
+                  }`}
+                  style={{
+                    boxShadow: userType === "admin" 
+                      ? '0 25px 50px rgba(168, 85, 247, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2)' 
+                      : '0 15px 30px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+                  }}
+                >
+                  <div className="text-center">
+                    <div className="text-5xl mb-4 transform hover:scale-110 transition-transform duration-300">👨‍💼</div>
+                    <div className={`font-bold text-xl mb-2 ${
+                      userType === "admin" ? "text-purple-300" : "text-white"
+                    }`}>
+                      Admin
+                    </div>
+                    <div className="text-white/60 text-sm">
+                      Manage platform
+                    </div>
+                  </div>
+                  {userType === "admin" && (
+                    <div className="absolute -top-3 -right-3 w-10 h-10 bg-gradient-to-r from-purple-500 to-pink-600 rounded-full flex items-center justify-center shadow-2xl animate-pulse">
+                      <span className="text-white font-bold">✓</span>
+                    </div>
+                  )}
+                </button>
               </div>
             </div>
 
@@ -247,6 +295,47 @@ export default function Login({ onLogin }) {
                   placeholder="Enter your email"
                 />
               </div>
+
+              {userType === "user" && (
+                <div className="animate-fadeIn">
+                  <button
+                    type="button"
+                    onClick={getCurrentLocation}
+                    disabled={isGettingLocation}
+                    className="w-full py-3 px-6 bg-white/10 border border-white/20 rounded-xl text-white font-semibold transition-all duration-300 hover:bg-white/20 hover:scale-105 disabled:opacity-50 disabled:scale-100 backdrop-blur-sm"
+                    style={{boxShadow: '0 10px 20px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'}}
+                  >
+                    {isGettingLocation ? (
+                      <div className="flex items-center justify-center space-x-2">
+                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                        <span>Getting Location...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center space-x-2">
+                        <span>📍</span>
+                        <span>Get My Location</span>
+                      </div>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {userType === "admin" && (
+                <div className="animate-fadeIn">
+                  <label className="block text-white font-semibold mb-4 text-lg">
+                    Admin Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    className="w-full px-6 py-4 bg-white/10 border border-white/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-all duration-300 text-lg text-white placeholder-white/50 backdrop-blur-sm"
+                    style={{boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)'}}
+                    placeholder="Enter admin password"
+                  />
+                </div>
+              )}
 
               {userType === "driver" && (
                 <div className="animate-fadeIn">

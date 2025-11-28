@@ -7,8 +7,7 @@ import threading, time, subprocess, json
 from db import SessionLocal, engine
 import models, schemas
 
-# Create tables
-models.Base.metadata.drop_all(bind=engine)
+# Create tables (don't drop existing data)
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -51,33 +50,39 @@ def create_ride_container(ride_id, port):
     try:
         container_name = f"ride-{ride_id}"
         
-        # Remove existing container if it exists
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
         
-        # Get the absolute path to the ride interface
-        import os
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        ride_interface_path = os.path.join(os.path.dirname(current_dir), "ride-interface")
-        
-        # Create a container with nginx serving our ride interface
+        # Create container first
         cmd = [
             "docker", "run", "-d",
             "--name", container_name,
+            "--network", "mini_uber_default",
             "-p", f"{port}:80",
-            "-v", f"{ride_interface_path}:/usr/share/nginx/html:ro",
-            "-e", f"RIDE_ID={ride_id}",
-            "-e", f"PORT={port}",
             "nginx:alpine"
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True)
         
-        if result.returncode == 0:
+        if result.returncode != 0:
+            print(f"❌ Failed to create container: {result.stderr}")
+            release_port(port)
+            return False
+        
+        # Copy HTML file into container
+        import os
+        server_dir = os.path.dirname(os.path.abspath(__file__))
+        project_dir = os.path.dirname(server_dir)
+        html_file = os.path.join(project_dir, "ride-interface", "index.html")
+        
+        copy_cmd = ["docker", "cp", html_file, f"{container_name}:/usr/share/nginx/html/index.html"]
+        copy_result = subprocess.run(copy_cmd, capture_output=True, text=True)
+        
+        if copy_result.returncode == 0:
             print(f"✅ Created ride container {container_name} on port {port}")
-            print(f"🌐 Ride interface available at: http://localhost:{port}")
             return True
         else:
-            print(f"❌ Failed to create container: {result.stderr}")
+            print(f"❌ Failed to copy HTML: {copy_result.stderr}")
+            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
             release_port(port)
             return False
             
@@ -169,16 +174,17 @@ def heartbeat(driver_id: int, db: Session = Depends(get_db)):
     if not driver:
         return {"error": "Driver not found"}
     driver.last_seen = datetime.utcnow()
+    if driver.status == "offline":
+        driver.status = "online"
     db.commit()
-    return {"message": "Driver is alive"}
+    return {"message": "Heartbeat received", "status": driver.status}
 
 
 @app.get("/available-drivers")
 def available_drivers(db: Session = Depends(get_db)):
     from datetime import timedelta
     
-    # Mark drivers as offline if they haven't sent heartbeat in 10 seconds
-    timeout = datetime.utcnow() - timedelta(seconds=10)
+    timeout = datetime.utcnow() - timedelta(seconds=15)
     inactive_drivers = db.query(models.Driver).filter(
         models.Driver.status == "online",
         models.Driver.last_seen < timeout
@@ -188,7 +194,9 @@ def available_drivers(db: Session = Depends(get_db)):
         driver.status = "offline"
     db.commit()
     
-    return db.query(models.Driver).filter(models.Driver.status == "online").all()
+    online_drivers = db.query(models.Driver).filter(models.Driver.status == "online").all()
+    print(f"🚗 Available drivers: {len(online_drivers)} - {[d.name for d in online_drivers]}")
+    return online_drivers
 
 
 # ------------------ RIDES ------------------
@@ -223,13 +231,16 @@ def get_ride(ride_id: int, db: Session = Depends(get_db)):
     }
 
 @app.get("/ride-by-port/{port}")
-def get_ride_by_port(port: int, db: Session = Depends(get_db)):
+async def get_ride_by_port(port: int, response: Response, db: Session = Depends(get_db)):
     """Get ride details by port number"""
-    # Query for active rides (not completed) with this port
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    
+    # Query for any ride with this port (including completed)
     ride = db.query(models.RideQueue).filter(
-        models.RideQueue.port == port,
-        models.RideQueue.status.in_(["pending", "assigned"])
+        models.RideQueue.port == port
     ).first()
+    
+    print(f"Looking for ride on port {port}: {ride}")
     
     if not ride:
         return {"error": "Ride not found for this port"}
@@ -237,9 +248,7 @@ def get_ride_by_port(port: int, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == ride.user_id).first()
     driver = db.query(models.Driver).filter(models.Driver.id == ride.driver_id).first() if ride.driver_id else None
     
-    print(f"📍 Fetching ride by port {port}: Ride ID={ride.id}, Container={ride.container_name}, User={user.name if user else 'Unknown'}, Driver={driver.name if driver else 'Not assigned'}")
-    
-    return {
+    result = {
         "ride_id": ride.id,
         "container_name": ride.container_name or f"ride-{ride.id}",
         "user_name": user.name if user else "Unknown",
@@ -248,6 +257,9 @@ def get_ride_by_port(port: int, db: Session = Depends(get_db)):
         "destination": ride.destination,
         "status": ride.status
     }
+    
+    print(f"Returning ride data: {result}")
+    return result
 
 @app.get("/ride-containers")
 def get_ride_containers():
@@ -286,8 +298,21 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
     user_id = ride.user_id
     start = ride.start
     destination = ride.destination
+    coupon_code = ride.coupon_code
 
-    # Get next available port for this ride
+    # Calculate fare
+    base_fare = 100.0
+    discount = 0.0
+    coupon_id = None
+
+    # Apply coupon if provided
+    if coupon_code:
+        coupon_result = validate_and_apply_coupon(db, user_id, coupon_code, base_fare, start)
+        if coupon_result["valid"]:
+            discount = coupon_result["discount"]
+            coupon_id = coupon_result["coupon_id"]
+
+    final_fare = base_fare - discount
     ride_port = get_next_available_port()
     
     driver = db.query(models.Driver).filter(models.Driver.status == "online").first()
@@ -306,42 +331,53 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
         destination=destination,
         status=status,
         driver_id=assigned_driver_id,
-        port=ride_port
+        port=ride_port,
+        fare=base_fare,
+        discount=discount,
+        final_fare=final_fare,
+        coupon_id=coupon_id
     )
     db.add(ride_db)
     db.commit()
     db.refresh(ride_db)
     
-    # Set container name and update in DB
+    # Update coupon usage
+    if coupon_id:
+        coupon = db.query(models.Coupon).filter(models.Coupon.id == coupon_id).first()
+        if coupon:
+            coupon.usage_count += 1
+        user_coupon = db.query(models.UserCoupon).filter(
+            models.UserCoupon.user_id == user_id,
+            models.UserCoupon.coupon_id == coupon_id
+        ).first()
+        if user_coupon:
+            user_coupon.usage_count += 1
+        db.commit()
+    
     container_name = f"ride-{ride_db.id}"
     ride_db.container_name = container_name
     db.commit()
     
-    # Create Docker container for this ride
     container_created = create_ride_container(ride_db.id, ride_port)
     
     if not container_created:
-        # If container creation fails, still proceed but log the error
         print(f"⚠️ Warning: Could not create container for ride {ride_db.id}")
 
     if driver:
         def finish_trip(driver_id, ride_id, ride_port, duration=1):
             time.sleep(duration * 60)
             
-            # Get fresh DB session for the thread
             thread_db = SessionLocal()
             try:
                 driver = thread_db.query(models.Driver).filter(models.Driver.id == driver_id).first()
                 ride = thread_db.query(models.RideQueue).filter(models.RideQueue.id == ride_id).first()
                 
                 if driver and ride:
-                    # Only set driver online if they were on_trip, not if they went offline
                     if driver.status == "on_trip":
                         driver.status = "online"
                     ride.status = "completed"
                     thread_db.commit()
                     
-                    # Remove the ride container
                     remove_ride_container(ride_id, ride_port)
                     
                     assign_pending_rides(thread_db)
@@ -350,7 +386,6 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
 
         threading.Thread(target=finish_trip, args=(driver.id, ride_db.id, ride_port, 1)).start()
 
-    # Add explicit CORS headers
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
@@ -364,9 +399,130 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
         "driver": driver.name if driver else None,
         "driver_id": driver.id if driver else None,
         "ride_port": ride_port,
-        "ride_url": f"http://localhost:{ride_port}"
+        "ride_url": f"http://localhost:{ride_port}",
+        "fare": base_fare,
+        "discount": discount,
+        "final_fare": final_fare
     }
 
+
+# ------------------ COUPONS ------------------
+
+@app.post("/create-coupon")
+def create_coupon(coupon: schemas.CouponCreate, db: Session = Depends(get_db)):
+    coupon_db = models.Coupon(**coupon.dict())
+    db.add(coupon_db)
+    db.commit()
+    db.refresh(coupon_db)
+    return {"message": "Coupon created 🎟️", "coupon_id": coupon_db.id, "code": coupon_db.code}
+
+@app.get("/coupons")
+def get_all_coupons(db: Session = Depends(get_db)):
+    return db.query(models.Coupon).filter(models.Coupon.is_active == True).all()
+
+@app.get("/user-coupons/{user_id}")
+def get_user_coupons(user_id: int, location: str = None, db: Session = Depends(get_db)):
+    from datetime import datetime
+    
+    # Get all active coupons
+    query = db.query(models.Coupon).filter(
+        models.Coupon.is_active == True,
+        models.Coupon.valid_until > datetime.utcnow()
+    )
+    
+    # Filter by location if provided
+    if location:
+        query = query.filter(
+            (models.Coupon.zone == None) | (models.Coupon.zone == location)
+        )
+    
+    coupons = query.all()
+    
+    # Check usage limits
+    available_coupons = []
+    for coupon in coupons:
+        user_coupon = db.query(models.UserCoupon).filter(
+            models.UserCoupon.user_id == user_id,
+            models.UserCoupon.coupon_id == coupon.id
+        ).first()
+        
+        if not user_coupon:
+            user_coupon = models.UserCoupon(user_id=user_id, coupon_id=coupon.id)
+            db.add(user_coupon)
+            db.commit()
+        
+        if user_coupon.usage_count < coupon.per_user_limit:
+            if coupon.total_usage_limit is None or coupon.usage_count < coupon.total_usage_limit:
+                available_coupons.append({
+                    "id": coupon.id,
+                    "code": coupon.code,
+                    "discount_type": coupon.discount_type,
+                    "discount_value": coupon.discount_value,
+                    "max_discount": coupon.max_discount,
+                    "min_fare": coupon.min_fare,
+                    "valid_until": coupon.valid_until,
+                    "zone": coupon.zone,
+                    "usage_count": user_coupon.usage_count,
+                    "usage_limit": coupon.per_user_limit
+                })
+    
+    return available_coupons
+
+@app.post("/validate-coupon")
+def validate_coupon(user_id: int, code: str, fare: float, location: str = None, db: Session = Depends(get_db)):
+    result = validate_and_apply_coupon(db, user_id, code, fare, location)
+    return result
+
+def validate_and_apply_coupon(db: Session, user_id: int, code: str, fare: float, location: str = None):
+    from datetime import datetime
+    
+    coupon = db.query(models.Coupon).filter(
+        models.Coupon.code == code,
+        models.Coupon.is_active == True
+    ).first()
+    
+    if not coupon:
+        return {"valid": False, "message": "Invalid coupon code", "discount": 0}
+    
+    if coupon.valid_until < datetime.utcnow():
+        return {"valid": False, "message": "Coupon expired", "discount": 0}
+    
+    if fare < coupon.min_fare:
+        return {"valid": False, "message": f"Minimum fare ₹{coupon.min_fare} required", "discount": 0}
+    
+    if coupon.zone and location and coupon.zone.lower() not in location.lower():
+        return {"valid": False, "message": f"Coupon valid only in {coupon.zone}", "discount": 0}
+    
+    if coupon.total_usage_limit and coupon.usage_count >= coupon.total_usage_limit:
+        return {"valid": False, "message": "Coupon usage limit reached", "discount": 0}
+    
+    user_coupon = db.query(models.UserCoupon).filter(
+        models.UserCoupon.user_id == user_id,
+        models.UserCoupon.coupon_id == coupon.id
+    ).first()
+    
+    if not user_coupon:
+        user_coupon = models.UserCoupon(user_id=user_id, coupon_id=coupon.id)
+        db.add(user_coupon)
+        db.commit()
+    
+    if user_coupon.usage_count >= coupon.per_user_limit:
+        return {"valid": False, "message": "You've already used this coupon", "discount": 0}
+    
+    # Calculate discount
+    if coupon.discount_type == "percentage":
+        discount = (fare * coupon.discount_value) / 100
+        if coupon.max_discount:
+            discount = min(discount, coupon.max_discount)
+    else:  # flat
+        discount = min(coupon.discount_value, fare)
+    
+    return {
+        "valid": True,
+        "message": "Coupon applied successfully",
+        "discount": discount,
+        "coupon_id": coupon.id
+    }
 
 # ------------------ HELPER ------------------
 

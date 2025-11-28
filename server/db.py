@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://paras:pass123@localhost:5436/uberdb"
+    "postgresql://paras:pass123@postgres:5432/uberdb"
 )
 
 engine = create_engine(DATABASE_URL)

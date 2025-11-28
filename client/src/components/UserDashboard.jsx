@@ -36,6 +36,51 @@ export default function UserDashboard({ user, onLogout }) {
     }
   };
 
+  const [availableCoupons, setAvailableCoupons] = useState([]);
+  const [selectedCoupon, setSelectedCoupon] = useState(null);
+  const [couponCode, setCouponCode] = useState("");
+  const [showCoupons, setShowCoupons] = useState(false);
+  const [fareEstimate, setFareEstimate] = useState(100);
+  const [discount, setDiscount] = useState(0);
+  const [userLocation, setUserLocation] = useState(user.location || null);
+  const [watchId, setWatchId] = useState(null);
+
+  const fetchCoupons = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/user-coupons/${user.id}`, {
+        params: { location: pickup }
+      });
+      setAvailableCoupons(response.data);
+    } catch (error) {
+      console.error("Error fetching coupons:", error);
+    }
+  };
+
+  const applyCoupon = async (code) => {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/validate-coupon`, null, {
+        params: {
+          user_id: user.id,
+          code: code,
+          fare: fareEstimate,
+          location: pickup
+        }
+      });
+      
+      if (response.data.valid) {
+        setDiscount(response.data.discount);
+        setSelectedCoupon(code);
+        setCouponCode(code);
+        setShowCoupons(false);
+      } else {
+        alert(response.data.message);
+      }
+    } catch (error) {
+      console.error("Error validating coupon:", error);
+      alert("Failed to validate coupon");
+    }
+  };
+
   const bookRide = async (e) => {
     e.preventDefault();
     
@@ -48,13 +93,17 @@ export default function UserDashboard({ user, onLogout }) {
       const response = await axios.post(`${API_BASE_URL}/book-ride`, {
         user_id: user.id,
         start: pickup,
-        destination: destination
+        destination: destination,
+        coupon_code: couponCode || null
       });
       
-      const { ride_id, ride_port, ride_url, driver } = response.data;
+      const { ride_id, ride_port, ride_url, driver, fare, discount, final_fare } = response.data;
       
       setPickup("");
       setDestination("");
+      setCouponCode("");
+      setSelectedCoupon(null);
+      setDiscount(0);
       fetchRides();
       
       window.open(ride_url, '_blank');
@@ -67,12 +116,52 @@ export default function UserDashboard({ user, onLogout }) {
   useEffect(() => {
     fetchRides();
     fetchNearbyDrivers();
+    fetchCoupons();
+    
+    // Start watching user location if not already set
+    if (navigator.geolocation) {
+      if (!userLocation) {
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            setUserLocation({
+              lat: position.coords.latitude,
+              lng: position.coords.longitude
+            });
+          },
+          (error) => console.error('Location error:', error),
+          { enableHighAccuracy: true }
+        );
+      }
+      
+      const id = navigator.geolocation.watchPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => console.error('Location error:', error),
+        { enableHighAccuracy: true, maximumAge: 0 }
+      );
+      setWatchId(id);
+    }
+    
     const interval = setInterval(() => {
       fetchRides();
       fetchNearbyDrivers();
     }, 3000);
-    return () => clearInterval(interval);
+    
+    return () => {
+      clearInterval(interval);
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+    };
   }, []);
+
+  useEffect(() => {
+    if (pickup) {
+      fetchCoupons();
+    }
+  }, [pickup]);
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 overflow-x-hidden">
@@ -160,6 +249,70 @@ export default function UserDashboard({ user, onLogout }) {
                   placeholder="Where to?"
                 />
               </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowCoupons(!showCoupons)}
+                  className="w-full mb-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white py-3 px-4 rounded-xl hover:from-green-600 hover:to-emerald-700 font-semibold shadow-lg transition-all duration-300 flex items-center justify-center gap-2"
+                >
+                  <span>🎟️</span> {selectedCoupon ? `Coupon: ${selectedCoupon}` : 'Apply Coupon'}
+                </button>
+                
+                {showCoupons && (
+                  <div className="mb-4 p-4 bg-gray-50 rounded-xl max-h-60 overflow-y-auto">
+                    <h3 className="font-semibold text-gray-800 mb-3">Available Coupons</h3>
+                    {availableCoupons.length === 0 ? (
+                      <p className="text-gray-500 text-sm">No coupons available</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {availableCoupons.map((coupon) => (
+                          <div
+                            key={coupon.id}
+                            onClick={() => applyCoupon(coupon.code)}
+                            className="p-3 bg-white border-2 border-green-200 rounded-lg cursor-pointer hover:border-green-400 transition-all"
+                          >
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-bold text-green-600">{coupon.code}</p>
+                                <p className="text-sm text-gray-600">
+                                  {coupon.discount_type === 'percentage' 
+                                    ? `${coupon.discount_value}% off` 
+                                    : `₹${coupon.discount_value} off`}
+                                  {coupon.max_discount && ` (max ₹${coupon.max_discount})`}
+                                </p>
+                                {coupon.zone && (
+                                  <p className="text-xs text-gray-500">Valid in: {coupon.zone}</p>
+                                )}
+                              </div>
+                              <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
+                                {coupon.usage_limit - coupon.usage_count} left
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {discount > 0 && (
+                  <div className="mb-4 p-3 bg-green-50 rounded-lg">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-600">Base Fare:</span>
+                      <span className="text-gray-900">₹{fareEstimate}</span>
+                    </div>
+                    <div className="flex justify-between text-sm text-green-600">
+                      <span>Discount:</span>
+                      <span>-₹{discount.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold text-lg mt-2 pt-2 border-t">
+                      <span>Total:</span>
+                      <span className="text-green-600">₹{(fareEstimate - discount).toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+              
               <button
                 type="submit"
                 className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-4 px-6 rounded-xl hover:from-blue-700 hover:to-indigo-700 font-semibold text-lg shadow-lg transition-all duration-300 hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2"
@@ -207,12 +360,20 @@ export default function UserDashboard({ user, onLogout }) {
         {/* Map */}
         <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-            <span>🗺️</span> Nearby Drivers
+            <span>🗺️</span> Live Location & Nearby Drivers
           </h2>
+          {userLocation && (
+            <div className="mb-3 p-3 bg-blue-50 rounded-lg">
+              <p className="text-sm text-blue-800">
+                📍 Your Location: {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+              </p>
+            </div>
+          )}
           <MapComponent 
-            rides={[]} 
-            drivers={nearbyDrivers} 
-            center={{ lat: 28.6139, lng: 77.2090 }} 
+            rides={currentRide ? [currentRide] : []} 
+            drivers={nearbyDrivers}
+            userLocation={userLocation}
+            center={userLocation || { lat: 28.6139, lng: 77.2090 }} 
           />
         </div>
 

@@ -1,45 +1,48 @@
 import { useEffect, useRef, useState } from "react";
 
-export default function MapComponent({ rides = [], drivers = [], center = { lat: 28.6139, lng: 77.2090 } }) {
+export default function MapComponent({ rides = [], drivers = [], userLocation = null, center = { lat: 28.6139, lng: 77.2090 } }) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [mapError, setMapError] = useState(false);
 
   useEffect(() => {
-    const checkGoogleMaps = () => {
+    let mounted = true;
+    
+    const checkAndInit = () => {
+      if (!mounted) return;
+      
       if (window.google && window.google.maps) {
-        setMapLoaded(true);
-        setMapError(false);
+        initializeMap();
         return true;
       }
       return false;
     };
 
-    if (checkGoogleMaps()) {
-      initializeMap();
-    } else {
+    if (!checkAndInit()) {
       const interval = setInterval(() => {
-        if (checkGoogleMaps()) {
+        if (checkAndInit()) {
           clearInterval(interval);
-          initializeMap();
         }
       }, 100);
 
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         clearInterval(interval);
-        if (!mapLoaded) {
+        if (mounted && !mapLoaded) {
           setMapError(true);
         }
       }, 10000);
 
-      return () => clearInterval(interval);
+      return () => {
+        mounted = false;
+        clearInterval(interval);
+        clearTimeout(timeout);
+      };
     }
   }, []);
 
   const initializeMap = () => {
     if (!window.google || !window.google.maps || !mapRef.current) {
-      setMapError(true);
       return;
     }
 
@@ -56,18 +59,25 @@ export default function MapComponent({ rides = [], drivers = [], center = { lat:
             }
           ]
         });
+        setMapLoaded(true);
+        setMapError(false);
       }
     } catch (error) {
       console.error('Error initializing map:', error);
       setMapError(true);
-      return;
     }
   };
 
   useEffect(() => {
     if (!mapLoaded || !mapInstanceRef.current) return;
     updateMarkers();
-  }, [rides, drivers, mapLoaded]);
+  }, [rides, drivers, userLocation, mapLoaded]);
+
+  useEffect(() => {
+    if (mapInstanceRef.current && userLocation) {
+      mapInstanceRef.current.setCenter(userLocation);
+    }
+  }, [userLocation]);
 
   const updateMarkers = () => {
     if (!mapInstanceRef.current) return;
@@ -77,6 +87,40 @@ export default function MapComponent({ rides = [], drivers = [], center = { lat:
       mapInstanceRef.current.markers.forEach(marker => marker.setMap(null));
     }
     mapInstanceRef.current.markers = [];
+
+    // Add user location marker
+    if (userLocation) {
+      const userMarker = new window.google.maps.Marker({
+        position: userLocation,
+        map: mapInstanceRef.current,
+        title: 'Your Location',
+        icon: {
+          url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+            <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="20" cy="20" r="18" fill="#3B82F6" stroke="white" stroke-width="3"/>
+              <circle cx="20" cy="20" r="8" fill="white"/>
+            </svg>
+          `),
+          scaledSize: new window.google.maps.Size(40, 40)
+        },
+        animation: window.google.maps.Animation.BOUNCE
+      });
+
+      const userInfoWindow = new window.google.maps.InfoWindow({
+        content: `
+          <div style="padding: 8px;">
+            <h3 style="margin: 0 0 4px 0; color: #3B82F6;">📍 You are here</h3>
+            <p style="margin: 0; font-size: 12px; color: #666;">Live Location</p>
+          </div>
+        `
+      });
+
+      userMarker.addListener('click', () => {
+        userInfoWindow.open(mapInstanceRef.current, userMarker);
+      });
+
+      mapInstanceRef.current.markers.push(userMarker);
+    }
 
     // Add driver markers
     drivers.forEach((driver, index) => {
@@ -150,9 +194,9 @@ export default function MapComponent({ rides = [], drivers = [], center = { lat:
     });
   };
 
-  return (
-    <div className="w-full h-96 rounded-lg overflow-hidden border border-gray-300">
-      {mapError ? (
+  if (mapError) {
+    return (
+      <div className="w-full h-96 rounded-lg overflow-hidden border border-gray-300">
         <div className="w-full h-full bg-gray-100 flex items-center justify-center">
           <div className="text-center">
             <div className="text-4xl mb-2">🗺️</div>
@@ -174,9 +218,13 @@ export default function MapComponent({ rides = [], drivers = [], center = { lat:
             </div>
           </div>
         </div>
-      ) : mapLoaded ? (
-        <div ref={mapRef} className="w-full h-full" />
-      ) : (
+      </div>
+    );
+  }
+
+  if (!mapLoaded) {
+    return (
+      <div className="w-full h-96 rounded-lg overflow-hidden border border-gray-300">
         <div className="w-full h-full bg-gray-100 flex items-center justify-center">
           <div className="text-center">
             <div className="text-4xl mb-2">🗺️</div>
@@ -184,7 +232,13 @@ export default function MapComponent({ rides = [], drivers = [], center = { lat:
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mt-2"></div>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-96 rounded-lg overflow-hidden border border-gray-300">
+      <div ref={mapRef} className="w-full h-full" />
     </div>
   );
 }

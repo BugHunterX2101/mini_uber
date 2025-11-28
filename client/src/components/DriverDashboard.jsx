@@ -38,6 +38,17 @@ export default function DriverDashboard({ driver, onLogout }) {
     }
   };
 
+  const sendHeartbeat = async () => {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/heartbeat`, null, {
+        params: { driver_id: driver.id }
+      });
+      console.log('Heartbeat sent:', response.data);
+    } catch (error) {
+      console.error("Heartbeat error:", error);
+    }
+  };
+
   const toggleOnlineStatus = async () => {
     try {
       if (isOnline) {
@@ -50,21 +61,11 @@ export default function DriverDashboard({ driver, onLogout }) {
           params: { driver_id: driver.id }
         });
         setIsOnline(true);
-        await sendHeartbeat(); // Send heartbeat immediately after going online
+        await sendHeartbeat();
       }
-      fetchOnlineDrivers(); // Refresh driver count immediately
+      await fetchOnlineDrivers();
     } catch (error) {
       console.error("Error toggling status:", error);
-    }
-  };
-
-  const sendHeartbeat = async () => {
-    try {
-      await axios.post(`${API_BASE_URL}/heartbeat`, null, {
-        params: { driver_id: driver.id }
-      });
-    } catch (error) {
-      console.error("Heartbeat error:", error);
     }
   };
 
@@ -95,7 +96,7 @@ export default function DriverDashboard({ driver, onLogout }) {
     }, 3000);
     heartbeatInterval = setInterval(() => {
       sendHeartbeat();
-    }, 5000);
+    }, 4000);
     
     // Mark driver offline when tab closes
     const handleBeforeUnload = () => {
@@ -113,7 +114,7 @@ export default function DriverDashboard({ driver, onLogout }) {
         params: { driver_id: driver.id }
       }).catch(err => console.error("Error going offline:", err));
     };
-  }, []);
+  }, [isOnline]);
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-green-50 via-white to-blue-50 overflow-x-hidden">

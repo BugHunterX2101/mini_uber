@@ -240,11 +240,13 @@
     <script>
         const port = window.location.port || '7000';
         
-        // Fetch ride details by port to get correct ride ID
         async function fetchRideDetails() {
             try {
+                console.log('Fetching ride details for port:', port);
                 const response = await fetch(`http://localhost:8000/ride-by-port/${port}`);
                 const data = await response.json();
+                
+                console.log('Received data:', data);
                 
                 if (!data.error) {
                     document.getElementById('rideId').textContent = '#' + data.ride_id;
@@ -254,9 +256,15 @@
                     document.getElementById('driverName').textContent = data.driver_name;
                     document.getElementById('pickupLocation').textContent = data.start;
                     document.getElementById('dropLocation').textContent = data.destination;
+                } else {
+                    console.error('Error from API:', data.error);
+                    document.getElementById('rideId').textContent = 'Error';
+                    document.getElementById('userName').textContent = data.error;
                 }
             } catch (error) {
                 console.error('Error fetching ride details:', error);
+                document.getElementById('rideId').textContent = 'Error';
+                document.getElementById('userName').textContent = 'Failed to load';
             }
         }
         
