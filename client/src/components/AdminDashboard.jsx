@@ -383,8 +383,28 @@ export default function AdminDashboard({ onLogout }) {
         {activeTab === 'simulator' && (
           <div className="space-y-6">
             <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl">
-              <h2 className="text-2xl font-bold text-white mb-4">🎮 Scalability Simulator</h2>
-              <p className="text-white/80 mb-6">Test platform scalability by creating multiple users and drivers simultaneously</p>
+              <div className="flex justify-between items-center mb-4">
+                <div>
+                  <h2 className="text-2xl font-bold text-white">🎮 Scalability Simulator</h2>
+                  <p className="text-white/80 mt-2">Test platform scalability by creating multiple users and drivers simultaneously</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    if (!confirm('⚠️ This will delete ALL simulation test data (users/drivers with @test.com emails). Continue?')) return;
+                    try {
+                      const response = await axios.post(`${API_BASE_URL}/cleanup-simulation-data`);
+                      alert(`✅ Cleanup Complete!\n\n👥 Users deleted: ${response.data.deleted_users}\n🚗 Drivers deleted: ${response.data.deleted_drivers}\n🚖 Rides deleted: ${response.data.deleted_rides}`);
+                      fetchRides();
+                      fetchDrivers();
+                    } catch (error) {
+                      alert('❌ Cleanup failed: ' + error.message);
+                    }
+                  }}
+                  className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-lg transition-all"
+                >
+                  🗑️ Cleanup Test Data
+                </button>
+              </div>
               
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
                 <div className="space-y-4">
@@ -496,26 +516,47 @@ export default function AdminDashboard({ onLogout }) {
                       const startTime = Date.now();
                       setStats(prev => ({...prev, isSimulating: true}));
                       
-                      const ridePromises = [];
-                      for (let i = 0; i < num; i++) {
-                        const promise = axios.post(`${API_BASE_URL}/book-ride`, {
-                          user_id: 1,
-                          start: 'Test Location A',
-                          destination: 'Test Location B',
-                          pickup_lat: 28.6139 + (Math.random() - 0.5) * 0.1,
-                          pickup_lng: 77.2090 + (Math.random() - 0.5) * 0.1,
-                          dest_lat: 28.6315 + (Math.random() - 0.5) * 0.1,
-                          dest_lng: 77.2167 + (Math.random() - 0.5) * 0.1,
-                          coupon_code: null
-                        });
-                        ridePromises.push(promise);
+                      // Get available drivers first
+                      const driversResponse = await axios.get(`${API_BASE_URL}/available-drivers`);
+                      const availableDrivers = driversResponse.data;
+                      
+                      if (availableDrivers.length === 0) {
+                        alert('❌ No online drivers available! Create drivers first.');
+                        setStats(prev => ({...prev, isSimulating: false}));
+                        return;
                       }
                       
-                      await Promise.all(ridePromises);
-                      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-                      alert(`✅ Booked ${num} rides concurrently in ${duration}s\n📈 Rate: ${(num/duration).toFixed(1)} rides/sec`);
-                      setStats(prev => ({...prev, isSimulating: false}));
-                      fetchRides();
+                      if (num > availableDrivers.length) {
+                        alert(`⚠️ You have ${availableDrivers.length} drivers but want ${num} concurrent rides.\nCreate at least ${num} drivers for best results.`);
+                      }
+                      
+                      try {
+                        // Create rides directly with unique drivers (bypasses request/accept flow)
+                        const ridePromises = [];
+                        for (let i = 0; i < Math.min(num, availableDrivers.length); i++) {
+                          const driver = availableDrivers[i];
+                          const promise = axios.post(`${API_BASE_URL}/simulate-ride-with-driver`, null, {
+                            params: {
+                              user_id: 1,
+                              driver_id: driver.id
+                            }
+                          });
+                          ridePromises.push(promise);
+                          // Small delay between each ride to prevent port conflicts
+                          await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                        
+                        const results = await Promise.all(ridePromises);
+                        const successCount = results.filter(r => !r.data.error).length;
+                        
+                        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                        alert(`✅ Created ${successCount} concurrent rides in ${duration}s\n🐳 Check Docker Desktop for ${successCount} ride containers!\n📊 Containers: ride-1, ride-2, ride-3...\n🌐 Access at: localhost:7000, 7001, 7002...`);
+                        setStats(prev => ({...prev, isSimulating: false}));
+                        fetchRides();
+                      } catch (error) {
+                        alert('❌ Simulation failed: ' + error.message);
+                        setStats(prev => ({...prev, isSimulating: false}));
+                      }
                     }}
                     className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white py-3 rounded-xl font-bold hover:from-purple-600 hover:to-pink-700"
                   >
@@ -561,7 +602,7 @@ export default function AdminDashboard({ onLogout }) {
                 </div>
               </div>
               <p className="text-white/70 text-sm mt-4">
-                💡 Tip: Create 50+ users and drivers to test real-world scalability. The system handles concurrent requests efficiently.
+                💡 Tip: Create 50+ users and drivers to test real-world scalability. Use the cleanup button to remove test data.
               </p>
             </div>
           </div>

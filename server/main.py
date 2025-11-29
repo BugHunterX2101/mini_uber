@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
-import threading, time, subprocess, json
+import threading, time, subprocess, json, random
 
 from db import SessionLocal, engine
 import models, schemas
@@ -1016,6 +1016,100 @@ def delete_merchant(merchant_id: int, db: Session = Depends(get_db)):
     db.delete(merchant)
     db.commit()
     return {"message": "Merchant deleted"}
+
+@app.post("/simulate-ride-with-driver")
+def simulate_ride_with_driver(user_id: int, driver_id: int, db: Session = Depends(get_db)):
+    """Directly create and assign a ride to a specific driver for simulation"""
+    try:
+        # Create ride
+        ride_db = models.RideQueue(
+            user_id=user_id,
+            start='Test Location A',
+            destination='Test Location B',
+            pickup_lat=28.6139 + (random.random() - 0.5) * 0.1,
+            pickup_lng=77.2090 + (random.random() - 0.5) * 0.1,
+            dest_lat=28.6315 + (random.random() - 0.5) * 0.1,
+            dest_lng=77.2167 + (random.random() - 0.5) * 0.1,
+            status="assigned",
+            fare=100.0,
+            discount=0.0,
+            final_fare=100.0,
+            driver_id=driver_id,
+            port=get_next_available_port(),
+            container_name=None
+        )
+        db.add(ride_db)
+        db.commit()
+        db.refresh(ride_db)
+        
+        ride_db.container_name = f"ride-{ride_db.id}"
+        db.commit()
+        
+        # Create container
+        create_ride_container(ride_db.id, ride_db.port)
+        
+        # Auto-complete after 60 seconds
+        def finish_trip(driver_id, ride_id, ride_port):
+            time.sleep(60)
+            thread_db = SessionLocal()
+            try:
+                ride = thread_db.query(models.RideQueue).filter(models.RideQueue.id == ride_id).first()
+                if ride:
+                    ride.status = "completed"
+                    thread_db.commit()
+                    remove_ride_container(ride_id, ride_port)
+            finally:
+                thread_db.close()
+        
+        threading.Thread(target=finish_trip, args=(driver_id, ride_db.id, ride_db.port)).start()
+        
+        return {
+            "message": "Ride created",
+            "ride_id": ride_db.id,
+            "port": ride_db.port,
+            "container_name": ride_db.container_name
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+
+@app.post("/cleanup-simulation-data")
+def cleanup_simulation_data(db: Session = Depends(get_db)):
+    """Delete all simulation test data (users, drivers, rides created by simulator)"""
+    try:
+        # Delete users with test emails
+        deleted_users = db.query(models.User).filter(
+            models.User.email.like('%@test.com')
+        ).delete(synchronize_session=False)
+        
+        # Delete drivers with test emails
+        deleted_drivers = db.query(models.Driver).filter(
+            models.Driver.email.like('%@test.com')
+        ).delete(synchronize_session=False)
+        
+        # Delete ride requests for deleted users/drivers
+        db.query(models.RideRequest).delete(synchronize_session=False)
+        
+        # Delete user coupons for deleted users
+        db.query(models.UserCoupon).delete(synchronize_session=False)
+        
+        # Delete coupon redemptions for deleted users
+        db.query(models.CouponRedemption).delete(synchronize_session=False)
+        
+        # Delete rides for deleted users
+        deleted_rides = db.query(models.RideQueue).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        return {
+            "message": "Simulation data cleaned up successfully",
+            "deleted_users": deleted_users,
+            "deleted_drivers": deleted_drivers,
+            "deleted_rides": deleted_rides
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": f"Cleanup failed: {str(e)}"}
 
 # ------------------ HELPER ------------------
 
