@@ -7,8 +7,20 @@ import threading, time, subprocess, json
 from db import SessionLocal, engine
 import models, schemas
 
-# Create tables (don't drop existing data)
-models.Base.metadata.create_all(bind=engine)
+# Wait for database to be ready
+import time as time_module
+for i in range(30):
+    try:
+        models.Base.metadata.create_all(bind=engine)
+        print("✅ Database connected successfully")
+        break
+    except Exception as e:
+        if i < 29:
+            print(f"⏳ Waiting for database... ({i+1}/30)")
+            time_module.sleep(1)
+        else:
+            print(f"❌ Database connection failed: {e}")
+            raise
 
 app = FastAPI()
 
@@ -118,7 +130,11 @@ def get_db():
 # ------------------ USERS ------------------
 
 @app.post("/register-user")
-def register_user(name: str, email: str, db: Session = Depends(get_db)):
+async def register_user(name: str, email: str, response: Response = None, db: Session = Depends(get_db)):
+    if response:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
         return {"message": "User already exists", "user_id": existing.id}
@@ -132,14 +148,29 @@ def register_user(name: str, email: str, db: Session = Depends(get_db)):
 # ------------------ DRIVERS ------------------
 
 @app.post("/register-driver")
-def register_driver(name: str, email: str, location: str, db: Session = Depends(get_db)):
+async def register_driver(name: str, email: str, location: str, latitude: float = None, longitude: float = None, response: Response = None, db: Session = Depends(get_db)):
+    if response:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
     existing = db.query(models.Driver).filter(models.Driver.email == email).first()
     if existing:
         existing.status = "offline"
         existing.last_seen = datetime.utcnow()
+        if latitude and longitude:
+            existing.latitude = latitude
+            existing.longitude = longitude
         db.commit()
         return {"message": "Driver already exists", "driver_id": existing.id}
-    driver = models.Driver(name=name, email=email, location=location, status="offline", last_seen=datetime.utcnow())
+    driver = models.Driver(
+        name=name, 
+        email=email, 
+        location=location, 
+        latitude=latitude,
+        longitude=longitude,
+        status="offline", 
+        last_seen=datetime.utcnow()
+    )
     db.add(driver)
     db.commit()
     db.refresh(driver)
@@ -169,22 +200,25 @@ def go_offline(driver_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/heartbeat")
-def heartbeat(driver_id: int, db: Session = Depends(get_db)):
+def heartbeat(driver_id: int, latitude: float = None, longitude: float = None, db: Session = Depends(get_db)):
     driver = db.query(models.Driver).filter(models.Driver.id == driver_id).first()
     if not driver:
         return {"error": "Driver not found"}
     driver.last_seen = datetime.utcnow()
     if driver.status == "offline":
         driver.status = "online"
+    if latitude is not None and longitude is not None:
+        driver.latitude = latitude
+        driver.longitude = longitude
     db.commit()
-    return {"message": "Heartbeat received", "status": driver.status}
+    return {"status": "ok"}
 
 
 @app.get("/available-drivers")
 def available_drivers(db: Session = Depends(get_db)):
     from datetime import timedelta
     
-    timeout = datetime.utcnow() - timedelta(seconds=15)
+    timeout = datetime.utcnow() - timedelta(seconds=60)
     inactive_drivers = db.query(models.Driver).filter(
         models.Driver.status == "online",
         models.Driver.last_seen < timeout
@@ -192,10 +226,10 @@ def available_drivers(db: Session = Depends(get_db)):
     
     for driver in inactive_drivers:
         driver.status = "offline"
-    db.commit()
+    if inactive_drivers:
+        db.commit()
     
     online_drivers = db.query(models.Driver).filter(models.Driver.status == "online").all()
-    print(f"🚗 Available drivers: {len(online_drivers)} - {[d.name for d in online_drivers]}")
     return online_drivers
 
 
@@ -293,12 +327,29 @@ def get_ride_containers():
 def book_ride_options():
     return {"message": "OK"}
 
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """Calculate distance between two points in km using Haversine formula"""
+    from math import radians, sin, cos, sqrt, atan2
+    R = 6371  # Earth radius in km
+    
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
 @app.post("/book-ride")
 def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depends(get_db)):
     user_id = ride.user_id
     start = ride.start
     destination = ride.destination
     coupon_code = ride.coupon_code
+    pickup_lat = ride.pickup_lat
+    pickup_lng = ride.pickup_lng
+    dest_lat = ride.dest_lat
+    dest_lng = ride.dest_lng
 
     # Calculate fare
     base_fare = 100.0
@@ -313,25 +364,17 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
             coupon_id = coupon_result["coupon_id"]
 
     final_fare = base_fare - discount
-    ride_port = get_next_available_port()
     
-    driver = db.query(models.Driver).filter(models.Driver.status == "online").first()
-    
-    if driver:
-        status = "assigned"
-        driver.status = "on_trip"
-        assigned_driver_id = driver.id
-    else:
-        status = "pending"
-        assigned_driver_id = None
-
+    # Create ride with searching status
     ride_db = models.RideQueue(
         user_id=user_id,
         start=start,
         destination=destination,
-        status=status,
-        driver_id=assigned_driver_id,
-        port=ride_port,
+        pickup_lat=pickup_lat,
+        pickup_lng=pickup_lng,
+        dest_lat=dest_lat,
+        dest_lng=dest_lng,
+        status="searching",
         fare=base_fare,
         discount=discount,
         final_fare=final_fare,
@@ -341,6 +384,46 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
     db.commit()
     db.refresh(ride_db)
     
+    # Find drivers within 1km radius
+    nearby_drivers = []
+    if pickup_lat and pickup_lng:
+        online_drivers = db.query(models.Driver).filter(
+            models.Driver.status == "online",
+            models.Driver.latitude.isnot(None),
+            models.Driver.longitude.isnot(None)
+        ).all()
+        
+        print(f"\n🔍 Searching for drivers near ({pickup_lat}, {pickup_lng})")
+        print(f"📊 Found {len(online_drivers)} online drivers with location")
+        
+        for driver in online_drivers:
+            distance = calculate_distance(pickup_lat, pickup_lng, driver.latitude, driver.longitude)
+            print(f"  🚗 {driver.name}: {distance:.2f}km away at ({driver.latitude}, {driver.longitude})")
+            if distance <= 100.0:  # Within 100km (increased for testing)
+                nearby_drivers.append((driver, distance))
+                print(f"    ✅ Added to nearby drivers")
+            else:
+                print(f"    ❌ Too far (> 100km)")
+        
+        # Sort by distance
+        nearby_drivers.sort(key=lambda x: x[1])
+        print(f"\n✅ Total nearby drivers: {len(nearby_drivers)}\n")
+    else:
+        print(f"\n⚠️ No pickup coordinates provided: lat={pickup_lat}, lng={pickup_lng}\n")
+    
+    # Send ride requests to nearby drivers
+    if nearby_drivers:
+        for driver, distance in nearby_drivers:
+            ride_request = models.RideRequest(
+                ride_id=ride_db.id,
+                driver_id=driver.id,
+                status="pending"
+            )
+            db.add(ride_request)
+        db.commit()
+    else:
+        ride_db.status = "no_drivers"
+        db.commit()
     # Update coupon usage
     if coupon_id:
         coupon = db.query(models.Coupon).filter(models.Coupon.id == coupon_id).first()
@@ -353,57 +436,147 @@ def book_ride(ride: schemas.RideCreate, response: Response, db: Session = Depend
         if user_coupon:
             user_coupon.usage_count += 1
         db.commit()
-    
-    container_name = f"ride-{ride_db.id}"
-    ride_db.container_name = container_name
-    db.commit()
-    
-    container_created = create_ride_container(ride_db.id, ride_port)
-    
-    if not container_created:
-        print(f"⚠️ Warning: Could not create container for ride {ride_db.id}")
-
-    if driver:
-        def finish_trip(driver_id, ride_id, ride_port, duration=1):
-            time.sleep(duration * 60)
-            
-            thread_db = SessionLocal()
-            try:
-                driver = thread_db.query(models.Driver).filter(models.Driver.id == driver_id).first()
-                ride = thread_db.query(models.RideQueue).filter(models.RideQueue.id == ride_id).first()
-                
-                if driver and ride:
-                    if driver.status == "on_trip":
-                        driver.status = "online"
-                    ride.status = "completed"
-                    thread_db.commit()
-                    
-                    remove_ride_container(ride_id, ride_port)
-                    
-                    assign_pending_rides(thread_db)
-            finally:
-                thread_db.close()
-
-        threading.Thread(target=finish_trip, args=(driver.id, ride_db.id, ride_port, 1)).start()
 
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"
     
     return {
-        "message": "Ride booked 🚖", 
+        "message": "Searching for drivers 🔍", 
         "ride_id": ride_db.id,
         "user_id": user_id,
         "start": start,
         "destination": destination,
-        "driver": driver.name if driver else None,
-        "driver_id": driver.id if driver else None,
-        "ride_port": ride_port,
-        "ride_url": f"http://localhost:{ride_port}",
+        "status": ride_db.status,
+        "nearby_drivers": len(nearby_drivers),
         "fare": base_fare,
         "discount": discount,
         "final_fare": final_fare
     }
+
+@app.get("/driver-ride-requests/{driver_id}")
+def get_driver_ride_requests(driver_id: int, db: Session = Depends(get_db)):
+    """Get pending ride requests for a driver"""
+    requests = db.query(models.RideRequest).filter(
+        models.RideRequest.driver_id == driver_id,
+        models.RideRequest.status == "pending"
+    ).all()
+    
+    result = []
+    for req in requests:
+        ride = db.query(models.RideQueue).filter(models.RideQueue.id == req.ride_id).first()
+        if ride and ride.status == "searching":
+            user = db.query(models.User).filter(models.User.id == ride.user_id).first()
+            result.append({
+                "request_id": req.id,
+                "ride_id": ride.id,
+                "user_name": user.name if user else "Unknown",
+                "pickup": ride.start,
+                "destination": ride.destination,
+                "pickup_lat": ride.pickup_lat,
+                "pickup_lng": ride.pickup_lng,
+                "dest_lat": ride.dest_lat,
+                "dest_lng": ride.dest_lng,
+                "fare": ride.final_fare,
+                "created_at": req.created_at
+            })
+    return result
+
+@app.post("/accept-ride-request/{request_id}")
+def accept_ride_request(request_id: int, driver_id: int, db: Session = Depends(get_db)):
+    """Driver accepts a ride request"""
+    ride_request = db.query(models.RideRequest).filter(
+        models.RideRequest.id == request_id,
+        models.RideRequest.driver_id == driver_id
+    ).first()
+    
+    if not ride_request:
+        return {"error": "Request not found"}
+    
+    ride = db.query(models.RideQueue).filter(models.RideQueue.id == ride_request.ride_id).first()
+    if not ride or ride.status != "searching":
+        return {"error": "Ride no longer available"}
+    
+    # Accept this request
+    ride_request.status = "accepted"
+    ride_request.responded_at = datetime.utcnow()
+    
+    # Reject all other requests for this ride
+    other_requests = db.query(models.RideRequest).filter(
+        models.RideRequest.ride_id == ride.id,
+        models.RideRequest.id != request_id,
+        models.RideRequest.status == "pending"
+    ).all()
+    for req in other_requests:
+        req.status = "expired"
+        req.responded_at = datetime.utcnow()
+    
+    # Assign ride to driver
+    ride.driver_id = driver_id
+    ride.status = "assigned"
+    ride.port = get_next_available_port()
+    ride.container_name = f"ride-{ride.id}"
+    
+    driver = db.query(models.Driver).filter(models.Driver.id == driver_id).first()
+    if driver:
+        driver.status = "on_trip"
+    
+    db.commit()
+    
+    # Create container
+    create_ride_container(ride.id, ride.port)
+    
+    # Auto-complete ride after 1 minute
+    def finish_trip(driver_id, ride_id, ride_port):
+        time.sleep(60)
+        thread_db = SessionLocal()
+        try:
+            driver = thread_db.query(models.Driver).filter(models.Driver.id == driver_id).first()
+            ride = thread_db.query(models.RideQueue).filter(models.RideQueue.id == ride_id).first()
+            if driver and ride:
+                if driver.status == "on_trip":
+                    driver.status = "online"
+                ride.status = "completed"
+                thread_db.commit()
+                remove_ride_container(ride_id, ride_port)
+        finally:
+            thread_db.close()
+    
+    threading.Thread(target=finish_trip, args=(driver_id, ride.id, ride.port)).start()
+    
+    return {
+        "message": "Ride accepted",
+        "ride_id": ride.id,
+        "ride_port": ride.port,
+        "ride_url": f"http://localhost:{ride.port}"
+    }
+
+@app.post("/reject-ride-request/{request_id}")
+def reject_ride_request(request_id: int, driver_id: int, db: Session = Depends(get_db)):
+    """Driver rejects a ride request"""
+    ride_request = db.query(models.RideRequest).filter(
+        models.RideRequest.id == request_id,
+        models.RideRequest.driver_id == driver_id
+    ).first()
+    
+    if not ride_request:
+        return {"error": "Request not found"}
+    
+    ride_request.status = "rejected"
+    ride_request.responded_at = datetime.utcnow()
+    db.commit()
+    
+    # Check if all drivers rejected
+    ride = db.query(models.RideQueue).filter(models.RideQueue.id == ride_request.ride_id).first()
+    if ride:
+        all_requests = db.query(models.RideRequest).filter(
+            models.RideRequest.ride_id == ride.id
+        ).all()
+        if all(req.status in ["rejected", "expired"] for req in all_requests):
+            ride.status = "no_drivers"
+            db.commit()
+    
+    return {"message": "Ride rejected"}
 
 
 # ------------------ COUPONS ------------------
@@ -523,6 +696,326 @@ def validate_and_apply_coupon(db: Session, user_id: int, code: str, fare: float,
         "discount": discount,
         "coupon_id": coupon.id
     }
+
+# ------------------ MERCHANTS ------------------
+
+@app.post("/register-merchant")
+def register_merchant(merchant: schemas.MerchantCreate, response: Response = None, db: Session = Depends(get_db)):
+    if response:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    existing = db.query(models.Merchant).filter(models.Merchant.email == merchant.email).first()
+    if existing:
+        return {"message": "Merchant already exists", "merchant_id": existing.id, "name": existing.name, "business_type": existing.business_type}
+    
+    merchant_db = models.Merchant(**merchant.dict())
+    db.add(merchant_db)
+    db.commit()
+    db.refresh(merchant_db)
+    return {"message": "Merchant registered", "merchant_id": merchant_db.id, "name": merchant_db.name, "business_type": merchant_db.business_type}
+
+@app.post("/merchant-login")
+def merchant_login(email: str, response: Response = None, db: Session = Depends(get_db)):
+    if response:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    merchant = db.query(models.Merchant).filter(models.Merchant.email == email).first()
+    if not merchant:
+        return {"error": "Merchant not found"}
+    return {
+        "merchant_id": merchant.id,
+        "name": merchant.name,
+        "email": merchant.email,
+        "business_type": merchant.business_type,
+        "address": merchant.address
+    }
+
+@app.post("/create-merchant-coupon")
+def create_merchant_coupon(coupon: schemas.MerchantCouponCreate, db: Session = Depends(get_db)):
+    merchant = db.query(models.Merchant).filter(models.Merchant.id == coupon.merchant_id).first()
+    if not merchant:
+        return {"error": "Merchant not found"}
+    
+    existing = db.query(models.MerchantCoupon).filter(models.MerchantCoupon.code == coupon.code).first()
+    if existing:
+        return {"error": "Coupon code already exists"}
+    
+    coupon_db = models.MerchantCoupon(**coupon.dict())
+    db.add(coupon_db)
+    db.commit()
+    db.refresh(coupon_db)
+    return {"message": "Merchant coupon created", "coupon_id": coupon_db.id}
+
+@app.get("/nearby-merchant-coupons")
+def get_nearby_merchant_coupons(user_id: int, dest_lat: float, dest_lng: float, db: Session = Depends(get_db)):
+    """Get merchant coupons near destination based on user eligibility"""
+    
+    # Get user stats
+    user_rides = db.query(models.RideQueue).filter(
+        models.RideQueue.user_id == user_id,
+        models.RideQueue.status == "completed"
+    ).all()
+    
+    total_rides = len(user_rides)
+    total_spent = sum(ride.final_fare for ride in user_rides)
+    
+    # Get all active merchant coupons
+    all_coupons = db.query(models.MerchantCoupon).filter(
+        models.MerchantCoupon.is_active == True,
+        models.MerchantCoupon.valid_until > datetime.utcnow()
+    ).all()
+    
+    eligible_coupons = []
+    for coupon in all_coupons:
+        merchant = db.query(models.Merchant).filter(models.Merchant.id == coupon.merchant_id).first()
+        if not merchant or not merchant.is_active:
+            continue
+        
+        # Check distance
+        distance = calculate_distance(dest_lat, dest_lng, merchant.latitude, merchant.longitude)
+        if distance > coupon.radius_km:
+            continue
+        
+        # Check eligibility
+        if total_rides < coupon.min_rides_required:
+            continue
+        if total_spent < coupon.min_fare_spent:
+            continue
+        
+        # Check usage limit
+        if coupon.usage_limit and coupon.usage_count >= coupon.usage_limit:
+            continue
+        
+        # Check if user already redeemed
+        already_redeemed = db.query(models.CouponRedemption).filter(
+            models.CouponRedemption.user_id == user_id,
+            models.CouponRedemption.merchant_coupon_id == coupon.id
+        ).first()
+        
+        if already_redeemed:
+            continue
+        
+        eligible_coupons.append({
+            "coupon_id": coupon.id,
+            "code": coupon.code,
+            "title": coupon.title,
+            "description": coupon.description,
+            "discount_type": coupon.discount_type,
+            "discount_value": coupon.discount_value,
+            "max_discount": coupon.max_discount,
+            "min_purchase": coupon.min_purchase,
+            "merchant_name": merchant.name,
+            "merchant_type": merchant.business_type,
+            "merchant_address": merchant.address,
+            "distance_km": round(distance, 2),
+            "valid_until": coupon.valid_until
+        })
+    
+    # Sort by distance
+    eligible_coupons.sort(key=lambda x: x["distance_km"])
+    return eligible_coupons
+
+@app.post("/redeem-merchant-coupon")
+def redeem_merchant_coupon(user_id: int, coupon_id: int, ride_id: int, db: Session = Depends(get_db)):
+    """Mark merchant coupon as redeemed"""
+    coupon = db.query(models.MerchantCoupon).filter(models.MerchantCoupon.id == coupon_id).first()
+    if not coupon:
+        return {"error": "Coupon not found"}
+    
+    redemption = models.CouponRedemption(
+        user_id=user_id,
+        merchant_coupon_id=coupon_id,
+        ride_id=ride_id
+    )
+    db.add(redemption)
+    coupon.usage_count += 1
+    db.commit()
+    
+    return {"message": "Coupon redeemed successfully"}
+
+@app.get("/merchant-coupons/{merchant_id}")
+def get_merchant_coupons(merchant_id: int, db: Session = Depends(get_db)):
+    """Get all coupons for a merchant"""
+    coupons = db.query(models.MerchantCoupon).filter(
+        models.MerchantCoupon.merchant_id == merchant_id
+    ).order_by(models.MerchantCoupon.created_at.desc()).all()
+    return coupons
+
+@app.get("/merchant-analytics/{merchant_id}")
+def get_merchant_analytics(merchant_id: int, db: Session = Depends(get_db)):
+    """Get analytics for merchant dashboard"""
+    coupons = db.query(models.MerchantCoupon).filter(
+        models.MerchantCoupon.merchant_id == merchant_id
+    ).all()
+    
+    total_coupons = len(coupons)
+    active_coupons = sum(1 for c in coupons if c.is_active)
+    
+    redemptions = db.query(models.CouponRedemption).join(
+        models.MerchantCoupon
+    ).filter(models.MerchantCoupon.merchant_id == merchant_id).all()
+    
+    total_redemptions = len(redemptions)
+    unique_customers = len(set(r.user_id for r in redemptions))
+    
+    # Top performing coupons
+    coupon_stats = {}
+    for redemption in redemptions:
+        coupon_id = redemption.merchant_coupon_id
+        if coupon_id not in coupon_stats:
+            coupon = next((c for c in coupons if c.id == coupon_id), None)
+            if coupon:
+                coupon_stats[coupon_id] = {
+                    "code": coupon.code,
+                    "title": coupon.title,
+                    "redemptions": 0
+                }
+        if coupon_id in coupon_stats:
+            coupon_stats[coupon_id]["redemptions"] += 1
+    
+    top_coupons = sorted(coupon_stats.values(), key=lambda x: x["redemptions"], reverse=True)[:5]
+    
+    # Recent activity
+    recent_redemptions = db.query(models.CouponRedemption).join(
+        models.MerchantCoupon
+    ).filter(models.MerchantCoupon.merchant_id == merchant_id).order_by(
+        models.CouponRedemption.redeemed_at.desc()
+    ).limit(10).all()
+    
+    recent_activity = []
+    for redemption in recent_redemptions:
+        user = db.query(models.User).filter(models.User.id == redemption.user_id).first()
+        coupon = db.query(models.MerchantCoupon).filter(
+            models.MerchantCoupon.id == redemption.merchant_coupon_id
+        ).first()
+        if user and coupon:
+            recent_activity.append({
+                "user_name": user.name,
+                "coupon_code": coupon.code,
+                "redeemed_at": redemption.redeemed_at
+            })
+    
+    # Customer stats
+    user_redemptions = {}
+    for redemption in redemptions:
+        user_id = redemption.user_id
+        user_redemptions[user_id] = user_redemptions.get(user_id, 0) + 1
+    
+    repeat_customers = sum(1 for count in user_redemptions.values() if count > 1)
+    
+    top_customers = []
+    for user_id, count in sorted(user_redemptions.items(), key=lambda x: x[1], reverse=True)[:10]:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if user:
+            top_customers.append({
+                "name": user.name,
+                "email": user.email,
+                "redemption_count": count
+            })
+    
+    return {
+        "total_coupons": total_coupons,
+        "active_coupons": active_coupons,
+        "total_redemptions": total_redemptions,
+        "unique_customers": unique_customers,
+        "top_coupons": top_coupons,
+        "recent_activity": recent_activity,
+        "customer_stats": {
+            "total_users": unique_customers,
+            "total_drivers": 0,
+            "repeat_customers": repeat_customers,
+            "top_customers": top_customers
+        }
+    }
+
+@app.get("/merchant-redemptions/{merchant_id}")
+def get_merchant_redemptions(merchant_id: int, db: Session = Depends(get_db)):
+    """Get all redemptions for merchant coupons"""
+    redemptions = db.query(models.CouponRedemption).join(
+        models.MerchantCoupon
+    ).filter(models.MerchantCoupon.merchant_id == merchant_id).order_by(
+        models.CouponRedemption.redeemed_at.desc()
+    ).all()
+    
+    result = []
+    for redemption in redemptions:
+        user = db.query(models.User).filter(models.User.id == redemption.user_id).first()
+        coupon = db.query(models.MerchantCoupon).filter(
+            models.MerchantCoupon.id == redemption.merchant_coupon_id
+        ).first()
+        if user and coupon:
+            result.append({
+                "customer_name": user.name,
+                "customer_type": "user",
+                "coupon_code": coupon.code,
+                "ride_id": redemption.ride_id,
+                "redeemed_at": redemption.redeemed_at
+            })
+    
+    return result
+
+@app.post("/toggle-merchant-coupon/{coupon_id}")
+def toggle_merchant_coupon(coupon_id: int, is_active: bool, db: Session = Depends(get_db)):
+    """Toggle merchant coupon active status"""
+    coupon = db.query(models.MerchantCoupon).filter(models.MerchantCoupon.id == coupon_id).first()
+    if not coupon:
+        return {"error": "Coupon not found"}
+    
+    coupon.is_active = is_active
+    db.commit()
+    return {"message": "Coupon updated"}
+
+@app.delete("/delete-merchant-coupon/{coupon_id}")
+def delete_merchant_coupon(coupon_id: int, db: Session = Depends(get_db)):
+    """Delete a merchant coupon"""
+    coupon = db.query(models.MerchantCoupon).filter(models.MerchantCoupon.id == coupon_id).first()
+    if not coupon:
+        return {"error": "Coupon not found"}
+    
+    # Delete associated redemptions first
+    db.query(models.CouponRedemption).filter(
+        models.CouponRedemption.merchant_coupon_id == coupon_id
+    ).delete()
+    
+    db.delete(coupon)
+    db.commit()
+    return {"message": "Coupon deleted"}
+
+@app.get("/all-merchants")
+def get_all_merchants(db: Session = Depends(get_db)):
+    """Get all merchants for admin"""
+    merchants = db.query(models.Merchant).all()
+    return merchants
+
+@app.put("/update-merchant/{merchant_id}")
+def update_merchant(merchant_id: int, merchant: schemas.MerchantCreate, db: Session = Depends(get_db)):
+    """Update merchant details"""
+    merchant_db = db.query(models.Merchant).filter(models.Merchant.id == merchant_id).first()
+    if not merchant_db:
+        return {"error": "Merchant not found"}
+    
+    for key, value in merchant.dict().items():
+        setattr(merchant_db, key, value)
+    
+    db.commit()
+    return {"message": "Merchant updated"}
+
+@app.delete("/delete-merchant/{merchant_id}")
+def delete_merchant(merchant_id: int, db: Session = Depends(get_db)):
+    """Delete a merchant"""
+    merchant = db.query(models.Merchant).filter(models.Merchant.id == merchant_id).first()
+    if not merchant:
+        return {"error": "Merchant not found"}
+    
+    # Delete associated coupons and redemptions
+    coupons = db.query(models.MerchantCoupon).filter(models.MerchantCoupon.merchant_id == merchant_id).all()
+    for coupon in coupons:
+        db.query(models.CouponRedemption).filter(
+            models.CouponRedemption.merchant_coupon_id == coupon.id
+        ).delete()
+        db.delete(coupon)
+    
+    db.delete(merchant)
+    db.commit()
+    return {"message": "Merchant deleted"}
 
 # ------------------ HELPER ------------------
 

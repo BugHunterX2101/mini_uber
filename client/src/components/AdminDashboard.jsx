@@ -3,6 +3,95 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { API_BASE_URL } from "../config";
 
+function MerchantsManagement() {
+  const [merchants, setMerchants] = useState([]);
+  const [editingMerchant, setEditingMerchant] = useState(null);
+
+  useEffect(() => {
+    fetchMerchants();
+  }, []);
+
+  const fetchMerchants = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/all-merchants`);
+      setMerchants(response.data);
+    } catch (error) {
+      console.error("Error fetching merchants:", error);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("Delete this merchant?")) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/delete-merchant/${id}`);
+      alert("Merchant deleted");
+      fetchMerchants();
+    } catch (error) {
+      alert("Failed to delete merchant");
+    }
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.put(`${API_BASE_URL}/update-merchant/${editingMerchant.id}`, editingMerchant);
+      alert("Merchant updated");
+      setEditingMerchant(null);
+      fetchMerchants();
+    } catch (error) {
+      alert("Failed to update merchant");
+    }
+  };
+
+  return (
+    <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl">
+      <h2 className="text-2xl font-bold text-white mb-6">🏪 Merchants Management</h2>
+      
+      <div className="grid gap-4">
+        {merchants.map((merchant) => (
+          <div key={merchant.id} className="bg-white/10 rounded-xl p-4">
+            {editingMerchant?.id === merchant.id ? (
+              <form onSubmit={handleUpdate} className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <input value={editingMerchant.name} onChange={(e) => setEditingMerchant({...editingMerchant, name: e.target.value})} className="px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white" />
+                  <input value={editingMerchant.email} onChange={(e) => setEditingMerchant({...editingMerchant, email: e.target.value})} className="px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white" />
+                  <input value={editingMerchant.phone} onChange={(e) => setEditingMerchant({...editingMerchant, phone: e.target.value})} className="px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white" />
+                  <select value={editingMerchant.business_type} onChange={(e) => setEditingMerchant({...editingMerchant, business_type: e.target.value})} className="px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white">
+                    <option value="restaurant">Restaurant</option>
+                    <option value="cafe">Cafe</option>
+                    <option value="shop">Shop</option>
+                    <option value="grocery">Grocery</option>
+                    <option value="pharmacy">Pharmacy</option>
+                  </select>
+                </div>
+                <input value={editingMerchant.address} onChange={(e) => setEditingMerchant({...editingMerchant, address: e.target.value})} className="w-full px-3 py-2 bg-white/20 border border-white/30 rounded-lg text-white" />
+                <div className="flex gap-2">
+                  <button type="submit" className="px-4 py-2 bg-green-600 text-white rounded-lg">Save</button>
+                  <button type="button" onClick={() => setEditingMerchant(null)} className="px-4 py-2 bg-gray-600 text-white rounded-lg">Cancel</button>
+                </div>
+              </form>
+            ) : (
+              <div className="flex justify-between items-start">
+                <div>
+                  <h3 className="text-xl font-bold text-white">{merchant.name}</h3>
+                  <p className="text-gray-300 text-sm">{merchant.email} • {merchant.phone}</p>
+                  <p className="text-gray-400 text-sm">{merchant.business_type} • {merchant.address}</p>
+                  <p className="text-gray-500 text-xs mt-1">{merchant.is_active ? "✅ Active" : "❌ Inactive"}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setEditingMerchant(merchant)} className="px-3 py-1 bg-blue-600 text-white rounded-lg text-sm">Edit</button>
+                  <button onClick={() => handleDelete(merchant.id)} className="px-3 py-1 bg-red-600 text-white rounded-lg text-sm">Delete</button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 export default function AdminDashboard({ onLogout }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("overview");
@@ -164,7 +253,7 @@ export default function AdminDashboard({ onLogout }) {
 
         {/* Tabs */}
         <div className="bg-white/10 backdrop-blur-lg rounded-xl p-2 mb-6 flex gap-2 overflow-x-auto">
-          {['overview', 'rides', 'drivers', 'coupons'].map(tab => (
+          {['overview', 'rides', 'drivers', 'coupons', 'merchants', 'simulator'].map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -288,6 +377,199 @@ export default function AdminDashboard({ onLogout }) {
               ))}
             </div>
           </div>
+        )}
+
+        {/* Simulator Tab */}
+        {activeTab === 'simulator' && (
+          <div className="space-y-6">
+            <div className="bg-white/10 backdrop-blur-lg rounded-xl p-6 shadow-xl">
+              <h2 className="text-2xl font-bold text-white mb-4">🎮 Scalability Simulator</h2>
+              <p className="text-white/80 mb-6">Test platform scalability by creating multiple users and drivers simultaneously</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-white font-semibold mb-2">Number of Users</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      defaultValue="10"
+                      id="numUsers"
+                      className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white"
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const num = parseInt(document.getElementById('numUsers').value);
+                      const startTime = Date.now();
+                      setStats(prev => ({...prev, isSimulating: true}));
+                      
+                      for (let i = 0; i < num; i++) {
+                        await axios.post(`${API_BASE_URL}/register-user`, null, {
+                          params: {
+                            name: `User${Date.now()}-${i}`,
+                            email: `user${Date.now()}-${i}@test.com`
+                          }
+                        });
+                      }
+                      
+                      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                      alert(`✅ Created ${num} users in ${duration}s\n📈 Rate: ${(num/duration).toFixed(1)} users/sec`);
+                      setStats(prev => ({...prev, isSimulating: false}));
+                      fetchRides();
+                    }}
+                    className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-xl font-bold hover:from-blue-600 hover:to-blue-700"
+                  >
+                    👥 Create Users
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-white font-semibold mb-2">Number of Drivers</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      defaultValue="10"
+                      id="numDrivers"
+                      className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white"
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const num = parseInt(document.getElementById('numDrivers').value);
+                      const locations = [
+                        {name: 'Delhi', lat: 28.6139, lng: 77.2090},
+                        {name: 'Mumbai', lat: 19.0760, lng: 72.8777},
+                        {name: 'Bangalore', lat: 12.9716, lng: 77.5946},
+                        {name: 'Pune', lat: 18.5204, lng: 73.8567},
+                        {name: 'Hyderabad', lat: 17.3850, lng: 78.4867}
+                      ];
+                      const startTime = Date.now();
+                      setStats(prev => ({...prev, isSimulating: true}));
+                      
+                      for (let i = 0; i < num; i++) {
+                        const loc = locations[i % locations.length];
+                        const response = await axios.post(`${API_BASE_URL}/register-driver`, null, {
+                          params: {
+                            name: `Driver${Date.now()}-${i}`,
+                            email: `driver${Date.now()}-${i}@test.com`,
+                            location: loc.name,
+                            latitude: loc.lat + (Math.random() - 0.5) * 0.1,
+                            longitude: loc.lng + (Math.random() - 0.5) * 0.1
+                          }
+                        });
+                        const driverId = response.data.driver_id;
+                        await axios.post(`${API_BASE_URL}/go-online`, null, {
+                          params: { driver_id: driverId }
+                        });
+                      }
+                      
+                      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                      alert(`✅ Created ${num} drivers in ${duration}s\n📈 Rate: ${(num/duration).toFixed(1)} drivers/sec`);
+                      setStats(prev => ({...prev, isSimulating: false}));
+                      fetchDrivers();
+                    }}
+                    className="w-full bg-gradient-to-r from-green-500 to-green-600 text-white py-3 rounded-xl font-bold hover:from-green-600 hover:to-green-700"
+                  >
+                    🚗 Create & Online Drivers
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-white font-semibold mb-2">Concurrent Rides</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      defaultValue="5"
+                      id="numRides"
+                      className="w-full px-4 py-2 bg-white/20 border border-white/30 rounded-lg text-white"
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      const num = parseInt(document.getElementById('numRides').value);
+                      const startTime = Date.now();
+                      setStats(prev => ({...prev, isSimulating: true}));
+                      
+                      const ridePromises = [];
+                      for (let i = 0; i < num; i++) {
+                        const promise = axios.post(`${API_BASE_URL}/book-ride`, {
+                          user_id: 1,
+                          start: 'Test Location A',
+                          destination: 'Test Location B',
+                          pickup_lat: 28.6139 + (Math.random() - 0.5) * 0.1,
+                          pickup_lng: 77.2090 + (Math.random() - 0.5) * 0.1,
+                          dest_lat: 28.6315 + (Math.random() - 0.5) * 0.1,
+                          dest_lng: 77.2167 + (Math.random() - 0.5) * 0.1,
+                          coupon_code: null
+                        });
+                        ridePromises.push(promise);
+                      }
+                      
+                      await Promise.all(ridePromises);
+                      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                      alert(`✅ Booked ${num} rides concurrently in ${duration}s\n📈 Rate: ${(num/duration).toFixed(1)} rides/sec`);
+                      setStats(prev => ({...prev, isSimulating: false}));
+                      fetchRides();
+                    }}
+                    className="w-full bg-gradient-to-r from-purple-500 to-pink-600 text-white py-3 rounded-xl font-bold hover:from-purple-600 hover:to-pink-700"
+                  >
+                    🚀 Simulate Concurrent Rides
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-blue-500/20 border border-blue-400/50 rounded-xl p-4">
+                  <h4 className="text-blue-300 font-bold mb-2">👥 User Creation</h4>
+                  <p className="text-white/80 text-sm">Creates users with unique emails and timestamps</p>
+                </div>
+                <div className="bg-green-500/20 border border-green-400/50 rounded-xl p-4">
+                  <h4 className="text-green-300 font-bold mb-2">🚗 Driver Deployment</h4>
+                  <p className="text-white/80 text-sm">Distributes drivers across 5 cities with GPS coordinates</p>
+                </div>
+                <div className="bg-purple-500/20 border border-purple-400/50 rounded-xl p-4">
+                  <h4 className="text-purple-300 font-bold mb-2">🚀 Load Testing</h4>
+                  <p className="text-white/80 text-sm">Tests concurrent ride booking and driver matching</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-r from-orange-500/20 to-red-500/20 border border-orange-400/50 rounded-xl p-6">
+              <h3 className="text-orange-300 font-bold mb-3 text-xl">📈 Scalability Metrics</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-white">
+                <div>
+                  <div className="text-2xl font-bold">{stats.totalRides}</div>
+                  <div className="text-sm opacity-80">Total Rides</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">{stats.onlineDrivers}</div>
+                  <div className="text-sm opacity-80">Online Drivers</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">{stats.activeRides}</div>
+                  <div className="text-sm opacity-80">Active Rides</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">₹{stats.totalRevenue.toFixed(0)}</div>
+                  <div className="text-sm opacity-80">Revenue</div>
+                </div>
+              </div>
+              <p className="text-white/70 text-sm mt-4">
+                💡 Tip: Create 50+ users and drivers to test real-world scalability. The system handles concurrent requests efficiently.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Merchants Tab */}
+        {activeTab === 'merchants' && (
+          <MerchantsManagement />
         )}
 
         {/* Coupons Tab */}
@@ -449,3 +731,4 @@ export default function AdminDashboard({ onLogout }) {
     </div>
   );
 }
+

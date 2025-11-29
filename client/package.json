@@ -13,8 +13,11 @@
     "@googlemaps/react-wrapper": "^1.2.0",
     "@tailwindcss/vite": "^4.1.13",
     "axios": "^1.11.0",
+    "leaflet": "^1.9.4",
+    "leaflet-routing-machine": "^3.2.12",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "react-leaflet": "^4.2.1",
     "react-router-dom": "^7.9.3",
     "tailwindcss": "^4.1.13"
   },

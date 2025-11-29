@@ -11,6 +11,8 @@ export default function DriverDashboard({ driver, onLogout }) {
   const [assignedRides, setAssignedRides] = useState([]);
   const [completedRides, setCompletedRides] = useState([]);
   const [onlineDriversCount, setOnlineDriversCount] = useState(0);
+  const [driverLocation, setDriverLocation] = useState(null);
+  const [rideRequests, setRideRequests] = useState([]);
 
   const fetchRides = async () => {
     try {
@@ -38,12 +40,67 @@ export default function DriverDashboard({ driver, onLogout }) {
     }
   };
 
-  const sendHeartbeat = async () => {
+  const calculateETA = (pickupLat, pickupLng) => {
+    if (!driverLocation || !pickupLat || !pickupLng) return null;
+    const R = 6371; // Earth radius in km
+    const dLat = (pickupLat - driverLocation.lat) * Math.PI / 180;
+    const dLon = (pickupLng - driverLocation.lng) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(driverLocation.lat * Math.PI / 180) * Math.cos(pickupLat * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    const avgSpeed = 30; // km/h average city speed
+    const timeInHours = distance / avgSpeed;
+    const timeInMinutes = Math.ceil(timeInHours * 60);
+    return timeInMinutes;
+  };
+
+  const fetchRideRequests = async () => {
     try {
-      const response = await axios.post(`${API_BASE_URL}/heartbeat`, null, {
+      const response = await axios.get(`${API_BASE_URL}/driver-ride-requests/${driver.id}`);
+      setRideRequests(response.data);
+    } catch (error) {
+      console.error("Error fetching ride requests:", error);
+    }
+  };
+
+  const acceptRide = async (requestId) => {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/accept-ride-request/${requestId}`, null, {
         params: { driver_id: driver.id }
       });
-      console.log('Heartbeat sent:', response.data);
+      alert("Ride accepted! ✅");
+      if (response.data.ride_url) {
+        window.open(response.data.ride_url, '_blank');
+      }
+      fetchRideRequests();
+      fetchRides();
+    } catch (error) {
+      console.error("Error accepting ride:", error);
+      alert("Failed to accept ride");
+    }
+  };
+
+  const rejectRide = async (requestId) => {
+    try {
+      await axios.post(`${API_BASE_URL}/reject-ride-request/${requestId}`, null, {
+        params: { driver_id: driver.id }
+      });
+      fetchRideRequests();
+    } catch (error) {
+      console.error("Error rejecting ride:", error);
+    }
+  };
+
+  const sendHeartbeat = async () => {
+    try {
+      const params = { driver_id: driver.id };
+      if (driverLocation) {
+        params.latitude = driverLocation.lat;
+        params.longitude = driverLocation.lng;
+      }
+      await axios.post(`${API_BASE_URL}/heartbeat`, null, { params });
     } catch (error) {
       console.error("Heartbeat error:", error);
     }
@@ -72,15 +129,42 @@ export default function DriverDashboard({ driver, onLogout }) {
   useEffect(() => {
     let ridesInterval;
     let heartbeatInterval;
+    let locationWatchId;
     
-    // Set driver online on mount
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setDriverLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => {
+          console.error('Location error:', error);
+          setDriverLocation({ lat: 28.6139, lng: 77.2090 });
+        },
+        { enableHighAccuracy: false, timeout: 3000, maximumAge: 10000 }
+      );
+      
+      locationWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          setDriverLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+        },
+        (error) => console.error('Location watch error:', error),
+        { enableHighAccuracy: false, maximumAge: 30000 }
+      );
+    }
+    
     const initDriver = async () => {
       try {
         await axios.post(`${API_BASE_URL}/go-online`, null, {
           params: { driver_id: driver.id }
         });
         setIsOnline(true);
-        await sendHeartbeat(); // Send heartbeat immediately
+        setTimeout(() => sendHeartbeat(), 500);
       } catch (error) {
         console.error("Error setting driver online:", error);
       }
@@ -89,32 +173,43 @@ export default function DriverDashboard({ driver, onLogout }) {
     initDriver();
     fetchRides();
     fetchOnlineDrivers();
+    fetchRideRequests();
     
     ridesInterval = setInterval(() => {
       fetchRides();
       fetchOnlineDrivers();
+      fetchRideRequests();
     }, 3000);
+    
+    // Heartbeat continues even when tab is hidden
     heartbeatInterval = setInterval(() => {
       sendHeartbeat();
     }, 4000);
     
-    // Mark driver offline when tab closes
+    // Handle visibility change
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        sendHeartbeat(); // Immediate heartbeat when tab becomes visible
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
     const handleBeforeUnload = () => {
       navigator.sendBeacon(`${API_BASE_URL}/go-offline?driver_id=${driver.id}`);
     };
-    
     window.addEventListener('beforeunload', handleBeforeUnload);
     
     return () => {
       clearInterval(ridesInterval);
       clearInterval(heartbeatInterval);
+      if (locationWatchId) navigator.geolocation.clearWatch(locationWatchId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      // Set driver offline on unmount
       axios.post(`${API_BASE_URL}/go-offline`, null, {
         params: { driver_id: driver.id }
       }).catch(err => console.error("Error going offline:", err));
     };
-  }, [isOnline]);
+  }, []);
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-green-50 via-white to-blue-50 overflow-x-hidden">
@@ -175,12 +270,70 @@ export default function DriverDashboard({ driver, onLogout }) {
           <h2 className="text-lg font-semibold text-gray-800 mb-4">
             🗺️ Live Map - Nearby Rides & Drivers
           </h2>
+          {driverLocation && (
+            <div className="mb-3 p-3 bg-green-50 rounded-lg">
+              <p className="text-sm text-green-800">
+                📍 Your Location: {driverLocation.lat.toFixed(4)}, {driverLocation.lng.toFixed(4)}
+              </p>
+            </div>
+          )}
           <MapComponent 
             rides={availableRides} 
             drivers={[]} 
-            center={{ lat: 28.6139, lng: 77.2090 }} 
+            userLocation={driverLocation}
+            center={driverLocation || { lat: 28.6139, lng: 77.2090 }} 
           />
         </div>
+
+        {/* Ride Requests */}
+        {rideRequests.length > 0 && (
+          <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-lg shadow-xl p-6 mb-6 border-2 border-yellow-300 animate-pulse">
+            <h2 className="text-xl font-bold text-orange-800 mb-4 flex items-center gap-2">
+              🔔 New Ride Requests ({rideRequests.length})
+            </h2>
+            <div className="space-y-4">
+              {rideRequests.map((request) => {
+                const eta = calculateETA(request.pickup_lat, request.pickup_lng);
+                return (
+                <div key={request.request_id} className="bg-white rounded-lg p-4 shadow-lg border-2 border-orange-200">
+                  <div className="mb-3">
+                    <p className="font-bold text-lg text-gray-900">👤 {request.user_name}</p>
+                    <p className="text-sm text-gray-600 mt-1">
+                      📍 <span className="font-semibold">Pickup:</span> {request.pickup}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      🎯 <span className="font-semibold">Drop:</span> {request.destination}
+                    </p>
+                    <div className="flex justify-between items-center mt-2">
+                      <p className="text-sm text-green-600 font-semibold">
+                        💰 Fare: ₹{request.fare}
+                      </p>
+                      {eta && (
+                        <p className="text-sm text-blue-600 font-semibold">
+                          ⏱️ {eta} min away
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => acceptRide(request.request_id)}
+                      className="flex-1 bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 font-semibold transition-all"
+                    >
+                      ✅ Accept
+                    </button>
+                    <button
+                      onClick={() => rejectRide(request.request_id)}
+                      className="flex-1 bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 font-semibold transition-all"
+                    >
+                      ❌ Reject
+                    </button>
+                  </div>
+                </div>
+              )})}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Available Rides */}

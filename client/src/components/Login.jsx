@@ -15,6 +15,7 @@ export default function Login({ onLogin }) {
   const [isLoading, setIsLoading] = useState(false);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [userCoords, setUserCoords] = useState(null);
+  const [driverCoords, setDriverCoords] = useState(null);
 
   const getCurrentLocation = async () => {
     setIsGettingLocation(true);
@@ -22,14 +23,19 @@ export default function Login({ onLogin }) {
     try {
       const position = await new Promise((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0
+          enableHighAccuracy: false,
+          timeout: 3000,
+          maximumAge: 10000
         });
       });
 
       const { latitude, longitude } = position.coords;
-      setUserCoords({ lat: latitude, lng: longitude });
+      
+      if (userType === 'user') {
+        setUserCoords({ lat: latitude, lng: longitude });
+      } else if (userType === 'driver') {
+        setDriverCoords({ lat: latitude, lng: longitude });
+      }
       
       const locationStr = `Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)}`;
       setFormData(prev => ({ ...prev, location: locationStr }));
@@ -61,13 +67,18 @@ export default function Login({ onLogin }) {
           return;
         }
       } else if (userType === "driver") {
-        const response = await axios.post(`${API_BASE_URL}/register-driver`, null, {
-          params: {
-            name: formData.name,
-            email: formData.email,
-            location: formData.location
-          }
-        });
+        const params = {
+          name: formData.name,
+          email: formData.email,
+          location: formData.location || 'Unknown'
+        };
+        
+        if (driverCoords) {
+          params.latitude = driverCoords.lat;
+          params.longitude = driverCoords.lng;
+        }
+        
+        const response = await axios.post(`${API_BASE_URL}/register-driver`, null, { params });
         
         await axios.post(`${API_BASE_URL}/go-online`, null, {
           params: { driver_id: response.data.driver_id }
@@ -82,6 +93,42 @@ export default function Login({ onLogin }) {
         };
         onLogin(userData);
         navigate('/driver');
+      } else if (userType === "merchant") {
+        let response = await axios.post(`${API_BASE_URL}/merchant-login`, null, {
+          params: { email: formData.email }
+        });
+        
+        if (response.data.error) {
+          // Register new merchant
+          const coords = await new Promise((resolve) => {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+              () => resolve({ lat: 28.6139, lng: 77.2090 })
+            );
+          });
+          
+          response = await axios.post(`${API_BASE_URL}/register-merchant`, {
+            name: formData.name,
+            email: formData.email,
+            business_type: merchantForm.business_type,
+            address: merchantForm.address,
+            latitude: coords.lat,
+            longitude: coords.lng,
+            phone: merchantForm.phone,
+            description: merchantForm.description
+          });
+        }
+        
+        const userData = {
+          type: "merchant",
+          id: response.data.merchant_id,
+          name: response.data.name || formData.name,
+          email: formData.email,
+          business_type: response.data.business_type || merchantForm.business_type,
+          address: response.data.address || merchantForm.address
+        };
+        onLogin(userData);
+        navigate('/merchant');
       } else {
         const response = await axios.post(`${API_BASE_URL}/register-user`, null, {
           params: {
@@ -108,310 +155,203 @@ export default function Login({ onLogin }) {
     }
   };
 
+  const [merchantForm, setMerchantForm] = useState({
+    business_type: "restaurant",
+    address: "",
+    phone: "",
+    description: ""
+  });
+
+  const roles = [
+    { id: "user", icon: "👤", title: "Passenger", color: "blue" },
+    { id: "driver", icon: "🚗", title: "Driver", color: "green" },
+    { id: "merchant", icon: "🏪", title: "Merchant", color: "orange" },
+    { id: "admin", icon: "⚙️", title: "Admin", color: "purple" }
+  ];
+
   return (
-    <div className="min-h-screen w-full bg-gradient-to-br from-slate-900 via-blue-900 to-indigo-900 relative overflow-hidden">
-      {/* Professional 3D Background Elements */}
-      <div className="absolute inset-0">
-        {/* 3D Grid Pattern */}
-        <div className="absolute inset-0 opacity-10">
-          <div className="grid grid-cols-12 grid-rows-12 h-full w-full">
-            {Array.from({length: 144}).map((_, i) => (
-              <div key={i} className="border border-white/20"></div>
-            ))}
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-purple-600 rounded-2xl mb-4">
+            <span className="text-3xl">🚖</span>
           </div>
+          <h1 className="text-4xl font-bold text-white mb-2">Mini-Uber</h1>
+          <p className="text-gray-400">Choose your role to continue</p>
         </div>
-        
-        {/* Floating 3D Geometric Shapes */}
-        <div className="absolute top-20 left-20 w-16 h-16 bg-gradient-to-br from-blue-400 to-cyan-500 rounded-lg transform rotate-45 animate-spin shadow-2xl" style={{animationDuration: '20s'}}></div>
-        <div className="absolute top-40 right-32 w-12 h-12 bg-gradient-to-br from-purple-400 to-pink-500 rounded-full animate-pulse shadow-2xl" style={{animationDelay: '2s'}}></div>
-        <div className="absolute bottom-32 left-40 w-20 h-20 bg-gradient-to-br from-green-400 to-teal-500 transform rotate-12 animate-bounce shadow-2xl" style={{animationDelay: '1s', animationDuration: '4s'}}></div>
-        <div className="absolute bottom-20 right-20 w-14 h-14 bg-gradient-to-br from-yellow-400 to-orange-500 rounded-lg transform -rotate-45 animate-pulse shadow-2xl" style={{animationDelay: '3s'}}></div>
-        
-        {/* Professional Car Icons */}
-        <div className="absolute top-32 left-1/4 text-4xl opacity-30 animate-float" style={{animationDelay: '0s'}}>🚗</div>
-        <div className="absolute bottom-40 right-1/4 text-3xl opacity-30 animate-float" style={{animationDelay: '2s'}}>🚕</div>
-        <div className="absolute top-1/2 left-16 text-2xl opacity-30 animate-float" style={{animationDelay: '4s'}}>🚙</div>
-        
-        {/* 3D Orbs with Professional Colors */}
-        <div className="absolute top-16 right-16 w-32 h-32 bg-gradient-to-br from-blue-500/30 to-cyan-600/30 rounded-full blur-xl animate-pulse shadow-2xl"></div>
-        <div className="absolute bottom-16 left-16 w-40 h-40 bg-gradient-to-br from-purple-500/20 to-pink-600/20 rounded-full blur-xl animate-pulse shadow-2xl" style={{animationDelay: '3s'}}></div>
-        <div className="absolute top-1/2 right-1/3 w-24 h-24 bg-gradient-to-br from-green-500/25 to-teal-600/25 rounded-full blur-xl animate-pulse shadow-2xl" style={{animationDelay: '1.5s'}}></div>
-      </div>
 
-      {/* Main Content */}
-      <div className="relative z-10 flex items-center justify-center min-h-screen p-4 sm:p-6 md:p-8">
-        <div className="w-full max-w-lg mx-auto">
-          {/* Professional Header */}
-          <div className="text-center mb-8 sm:mb-12 animate-fadeIn">
-            <div className="inline-flex items-center justify-center w-20 h-20 sm:w-24 sm:h-24 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-2xl mb-6 sm:mb-8 shadow-2xl transform hover:scale-110 transition-all duration-500 hover:rotate-6">
-              <div className="text-3xl sm:text-4xl">🚖</div>
-            </div>
-            <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold bg-gradient-to-r from-white via-blue-100 to-cyan-100 bg-clip-text text-transparent mb-3 sm:mb-4 drop-shadow-2xl animate-slideDown">
-              Mini-Uber
-            </h1>
-            <p className="text-white/80 text-base sm:text-lg md:text-xl font-light tracking-wide animate-slideUp">
-              Professional Transportation Platform
-            </p>
+        {/* Card */}
+        <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-8 border border-white/20">
+          {/* Role Selector */}
+          <div className="grid grid-cols-4 gap-3 mb-8">
+            {roles.map((role) => {
+              const isSelected = userType === role.id;
+              const bgClass = isSelected ? 
+                (role.id === 'user' ? 'bg-blue-600 border-blue-400 shadow-blue-500/50' :
+                 role.id === 'driver' ? 'bg-green-600 border-green-400 shadow-green-500/50' :
+                 role.id === 'merchant' ? 'bg-orange-600 border-orange-400 shadow-orange-500/50' :
+                 'bg-purple-600 border-purple-400 shadow-purple-500/50') :
+                'bg-white/5 border-white/10';
+              
+              return (
+                <button
+                  key={role.id}
+                  type="button"
+                  onClick={() => setUserType(role.id)}
+                  className={`relative p-4 rounded-xl transition-all border-2 ${bgClass} ${
+                    isSelected ? 'text-white shadow-lg scale-105' : 'text-gray-300 hover:bg-white/10 hover:border-white/20'
+                  }`}
+                >
+                  <div className="text-2xl mb-1">{role.icon}</div>
+                  <div className="text-xs font-semibold">{role.title}</div>
+                  {isSelected && (
+                    <div className="absolute -top-1 -right-1 w-5 h-5 bg-white rounded-full flex items-center justify-center">
+                      <span className="text-xs text-gray-900">✓</span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
-          {/* Professional Login Card */}
-          <div className="bg-white/10 backdrop-blur-2xl rounded-2xl sm:rounded-3xl shadow-2xl p-6 sm:p-8 md:p-10 border border-white/20 transform hover:scale-[1.02] transition-all duration-500 animate-scaleIn" 
-               style={{boxShadow: '0 25px 50px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)'}}>
-            
-            <div className="text-center mb-6 sm:mb-8 md:mb-10">
-              <h2 className="text-2xl sm:text-3xl font-bold text-white mb-2 sm:mb-3">Welcome</h2>
-              <p className="text-white/70 text-sm sm:text-base md:text-lg">Select your role to continue</p>
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <input
+                type="text"
+                required
+                value={formData.name}
+                onChange={(e) => setFormData({...formData, name: e.target.value})}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-purple-500 transition-all"
+                placeholder="Full Name"
+              />
             </div>
 
-            {/* Professional Role Selector */}
-            <div className="mb-6 sm:mb-8 md:mb-10">
-              <div className="grid grid-cols-3 gap-3 sm:gap-4 md:gap-6">
-                <button
-                  type="button"
-                  onClick={() => setUserType("user")}
-                  className={`relative p-4 sm:p-6 md:p-8 rounded-xl sm:rounded-2xl border-2 transition-all duration-500 transform hover:scale-105 sm:hover:scale-110 ${
-                    userType === "user"
-                      ? "border-blue-400 bg-gradient-to-br from-blue-500/20 to-cyan-600/20 shadow-2xl scale-105"
-                      : "border-white/20 bg-white/5 hover:border-blue-400/50 hover:bg-blue-500/10"
-                  }`}
-                  style={{
-                    boxShadow: userType === "user" 
-                      ? '0 25px 50px rgba(59, 130, 246, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2)' 
-                      : '0 15px 30px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                  }}
-                >
-                  <div className="text-center">
-                    <div className="text-3xl sm:text-4xl md:text-5xl mb-2 sm:mb-3 md:mb-4 transform hover:scale-110 transition-transform duration-300">👤</div>
-                    <div className={`font-bold text-base sm:text-lg md:text-xl mb-1 sm:mb-2 ${
-                      userType === "user" ? "text-blue-300" : "text-white"
-                    }`}>
-                      Passenger
-                    </div>
-                    <div className="text-white/60 text-xs sm:text-sm">
-                      Book premium rides
-                    </div>
-                  </div>
-                  {userType === "user" && (
-                    <div className="absolute -top-2 -right-2 sm:-top-3 sm:-right-3 w-8 h-8 sm:w-10 sm:h-10 bg-gradient-to-r from-blue-500 to-cyan-600 rounded-full flex items-center justify-center shadow-2xl animate-bounce">
-                      <span className="text-white font-bold">✓</span>
-                    </div>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setUserType("driver")}
-                  className={`relative p-8 rounded-2xl border-2 transition-all duration-500 transform hover:scale-110 ${
-                    userType === "driver"
-                      ? "border-green-400 bg-gradient-to-br from-green-500/20 to-emerald-600/20 shadow-2xl scale-105"
-                      : "border-white/20 bg-white/5 hover:border-green-400/50 hover:bg-green-500/10"
-                  }`}
-                  style={{
-                    boxShadow: userType === "driver" 
-                      ? '0 25px 50px rgba(34, 197, 94, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2)' 
-                      : '0 15px 30px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                  }}
-                >
-                  <div className="text-center">
-                    <div className="text-5xl mb-4 transform hover:scale-110 transition-transform duration-300">🚗</div>
-                    <div className={`font-bold text-xl mb-2 ${
-                      userType === "driver" ? "text-green-300" : "text-white"
-                    }`}>
-                      Driver
-                    </div>
-                    <div className="text-white/60 text-sm">
-                      Start earning today
-                    </div>
-                  </div>
-                  {userType === "driver" && (
-                    <div className="absolute -top-3 -right-3 w-10 h-10 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full flex items-center justify-center shadow-2xl animate-pulse">
-                      <span className="text-white font-bold">✓</span>
-                    </div>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setUserType("admin")}
-                  className={`relative p-8 rounded-2xl border-2 transition-all duration-500 transform hover:scale-110 ${
-                    userType === "admin"
-                      ? "border-purple-400 bg-gradient-to-br from-purple-500/20 to-pink-600/20 shadow-2xl scale-105"
-                      : "border-white/20 bg-white/5 hover:border-purple-400/50 hover:bg-purple-500/10"
-                  }`}
-                  style={{
-                    boxShadow: userType === "admin" 
-                      ? '0 25px 50px rgba(168, 85, 247, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2)' 
-                      : '0 15px 30px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
-                  }}
-                >
-                  <div className="text-center">
-                    <div className="text-5xl mb-4 transform hover:scale-110 transition-transform duration-300">👨‍💼</div>
-                    <div className={`font-bold text-xl mb-2 ${
-                      userType === "admin" ? "text-purple-300" : "text-white"
-                    }`}>
-                      Admin
-                    </div>
-                    <div className="text-white/60 text-sm">
-                      Manage platform
-                    </div>
-                  </div>
-                  {userType === "admin" && (
-                    <div className="absolute -top-3 -right-3 w-10 h-10 bg-gradient-to-r from-purple-500 to-pink-600 rounded-full flex items-center justify-center shadow-2xl animate-pulse">
-                      <span className="text-white font-bold">✓</span>
-                    </div>
-                  )}
-                </button>
-              </div>
+            <div>
+              <input
+                type="email"
+                required
+                value={formData.email}
+                onChange={(e) => setFormData({...formData, email: e.target.value})}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-purple-500 transition-all"
+                placeholder="Email"
+              />
             </div>
 
-            {/* Professional Form */}
-            <form onSubmit={handleSubmit} className="space-y-8">
+            {userType === "driver" && (
               <div>
-                <label className="block text-white font-semibold mb-4 text-lg">
-                  Full Name
-                </label>
                 <input
                   type="text"
                   required
-                  value={formData.name}
-                  onChange={(e) => setFormData({...formData, name: e.target.value})}
-                  className="w-full px-6 py-4 bg-white/10 border border-white/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-300 text-lg text-white placeholder-white/50 backdrop-blur-sm"
-                  style={{boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)'}}
-                  placeholder="Enter your full name"
+                  value={formData.location}
+                  onChange={(e) => setFormData({...formData, location: e.target.value})}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-purple-500 transition-all mb-2"
+                  placeholder="Current Location"
                 />
+                <button
+                  type="button"
+                  onClick={getCurrentLocation}
+                  disabled={isGettingLocation}
+                  className="w-full py-2 bg-white/5 border border-white/10 rounded-xl text-white text-sm hover:bg-white/10 transition-all disabled:opacity-50"
+                >
+                  {isGettingLocation ? "Getting Location..." : "📍 Use Current Location"}
+                </button>
               </div>
+            )}
 
-              <div>
-                <label className="block text-white font-semibold mb-4 text-lg">
-                  Email
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  className="w-full px-6 py-4 bg-white/10 border border-white/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-300 text-lg text-white placeholder-white/50 backdrop-blur-sm"
-                  style={{boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)'}}
-                  placeholder="Enter your email"
-                />
-              </div>
+            {userType === "user" && (
+              <button
+                type="button"
+                onClick={getCurrentLocation}
+                disabled={isGettingLocation}
+                className="w-full py-2 bg-white/5 border border-white/10 rounded-xl text-white text-sm hover:bg-white/10 transition-all disabled:opacity-50"
+              >
+                {isGettingLocation ? "Getting Location..." : userCoords ? "✅ Location Captured" : "📍 Get My Location"}
+              </button>
+            )}
 
-              {userType === "user" && (
-                <div className="animate-fadeIn">
-                  <button
-                    type="button"
-                    onClick={getCurrentLocation}
-                    disabled={isGettingLocation}
-                    className="w-full py-3 px-6 bg-white/10 border border-white/20 rounded-xl text-white font-semibold transition-all duration-300 hover:bg-white/20 hover:scale-105 disabled:opacity-50 disabled:scale-100 backdrop-blur-sm"
-                    style={{boxShadow: '0 10px 20px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'}}
+            {userType === "merchant" && (
+              <>
+                <div>
+                  <select
+                    value={merchantForm.business_type}
+                    onChange={(e) => setMerchantForm({...merchantForm, business_type: e.target.value})}
+                    className="w-full px-4 py-3 bg-purple-900 border border-white/10 rounded-xl text-white focus:outline-none focus:border-orange-500 transition-all"
+                    style={{ color: 'white' }}
                   >
-                    {isGettingLocation ? (
-                      <div className="flex items-center justify-center space-x-2">
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                        <span>Getting Location...</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center space-x-2">
-                        <span>📍</span>
-                        <span>Get My Location</span>
-                      </div>
-                    )}
-                  </button>
+                    <option value="restaurant" style={{ color: 'white' }}>Restaurant</option>
+                    <option value="cafe" style={{ color: 'white' }}>Cafe</option>
+                    <option value="shop" style={{ color: 'white' }}>Shop</option>
+                    <option value="grocery" style={{ color: 'white' }}>Grocery</option>
+                    <option value="pharmacy" style={{ color: 'white' }}>Pharmacy</option>
+                    <option value="other" style={{ color: 'white' }}>Other</option>
+                  </select>
                 </div>
-              )}
-
-              {userType === "admin" && (
-                <div className="animate-fadeIn">
-                  <label className="block text-white font-semibold mb-4 text-lg">
-                    Admin Password
-                  </label>
+                <div>
                   <input
-                    type="password"
+                    type="text"
                     required
-                    value={adminPassword}
-                    onChange={(e) => setAdminPassword(e.target.value)}
-                    className="w-full px-6 py-4 bg-white/10 border border-white/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-400 focus:border-transparent transition-all duration-300 text-lg text-white placeholder-white/50 backdrop-blur-sm"
-                    style={{boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)'}}
-                    placeholder="Enter admin password"
+                    value={merchantForm.address}
+                    onChange={(e) => setMerchantForm({...merchantForm, address: e.target.value})}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-orange-500 transition-all"
+                    placeholder="e.g., 123 Main Street, New Delhi"
                   />
                 </div>
-              )}
-
-              {userType === "driver" && (
-                <div className="animate-fadeIn">
-                  <label className="block text-white font-semibold mb-4 text-lg">
-                    Current Location
-                  </label>
-                  <div className="space-y-4">
-                    <div className="relative">
-                      <input
-                        type="text"
-                        required
-                        value={formData.location}
-                        onChange={(e) => setFormData({...formData, location: e.target.value})}
-                        className="w-full px-6 py-4 bg-white/10 border border-white/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent transition-all duration-300 text-lg text-white placeholder-white/50 backdrop-blur-sm"
-                        style={{boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.2)'}}
-                        placeholder="Enter your current location"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={getCurrentLocation}
-                      disabled={isGettingLocation}
-                      className="w-full py-3 px-6 bg-white/10 border border-white/20 rounded-xl text-white font-semibold transition-all duration-300 hover:bg-white/20 hover:scale-105 disabled:opacity-50 disabled:scale-100 backdrop-blur-sm"
-                      style={{boxShadow: '0 10px 20px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)'}}
-                    >
-                      {isGettingLocation ? (
-                        <div className="flex items-center justify-center space-x-2">
-                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                          <span>Getting Location...</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center space-x-2">
-                          <span>📍</span>
-                          <span>Use Current Location</span>
-                        </div>
-                      )}
-                    </button>
-                  </div>
+                <div>
+                  <input
+                    type="tel"
+                    required
+                    value={merchantForm.phone}
+                    onChange={(e) => setMerchantForm({...merchantForm, phone: e.target.value})}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-orange-500 transition-all"
+                    placeholder="e.g., +91 9876543210"
+                  />
                 </div>
-              )}
+                <div>
+                  <textarea
+                    value={merchantForm.description}
+                    onChange={(e) => setMerchantForm({...merchantForm, description: e.target.value})}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-orange-500 transition-all resize-none"
+                    placeholder="e.g., Best Italian restaurant in town with authentic cuisine"
+                    rows="2"
+                  />
+                </div>
+              </>
+            )}
 
-              <button
-                type="submit"
-                disabled={isLoading}
-                className={`w-full py-5 px-8 rounded-xl font-bold text-xl text-white transition-all duration-500 transform hover:scale-105 disabled:scale-100 disabled:opacity-70 ${
-                  userType === "driver"
-                    ? "bg-gradient-to-r from-green-500 via-green-600 to-emerald-700 hover:from-green-600 hover:to-emerald-800"
-                    : "bg-gradient-to-r from-blue-500 via-blue-600 to-cyan-700 hover:from-blue-600 hover:to-cyan-800"
-                }`}
-                style={{
-                  boxShadow: userType === "driver" 
-                    ? '0 20px 40px rgba(34, 197, 94, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2)' 
-                    : '0 20px 40px rgba(59, 130, 246, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
-                }}
-              >
-                {isLoading ? (
-                  <div className="flex items-center justify-center space-x-3">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>
-                    <span>Initializing...</span>
-                  </div>
-                ) : (
-                  <span>{userType === "driver" ? "🚗 Begin Driving" : "🚖 Start Journey"}</span>
-                )}
-              </button>
-            </form>
+            {userType === "admin" && (
+              <div>
+                <input
+                  type="password"
+                  required
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-purple-500 transition-all"
+                  placeholder="Admin Password"
+                />
+              </div>
+            )}
 
-            <div className="text-center mt-8">
-              <p className="text-white/50 text-sm">
-                Secure • Professional • Trusted Platform
-              </p>
-            </div>
-          </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className={`w-full py-4 text-white font-semibold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-6 ${
+                userType === "user" ? "bg-blue-600 hover:bg-blue-700" :
+                userType === "driver" ? "bg-green-600 hover:bg-green-700" :
+                userType === "merchant" ? "bg-orange-600 hover:bg-orange-700" :
+                "bg-purple-600 hover:bg-purple-700"
+              }`}
+            >
+              {isLoading ? "Loading..." : "Continue"}
+            </button>
+          </form>
         </div>
+
+        <p className="text-center text-gray-500 text-sm mt-6">
+          Secure • Fast • Reliable
+        </p>
       </div>
-
-
     </div>
   );
 }

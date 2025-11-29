@@ -4,6 +4,7 @@ import Login from "./components/Login";
 import UserDashboard from "./components/UserDashboard";
 import DriverDashboard from "./components/DriverDashboard";
 import AdminDashboard from "./components/AdminDashboard";
+import MerchantDashboard from "./components/MerchantDashboard";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
@@ -41,6 +42,8 @@ export default function App() {
                 <Navigate to="/user" replace />
               ) : currentUser.type === "driver" ? (
                 <Navigate to="/driver" replace />
+              ) : currentUser.type === "merchant" ? (
+                <Navigate to="/merchant" replace />
               ) : (
                 <Navigate to="/admin" replace />
               )
@@ -71,6 +74,16 @@ export default function App() {
             element={
               currentUser && currentUser.type === "admin" ? (
                 <AdminDashboard onLogout={handleLogout} />
+              ) : (
+                <Navigate to="/" replace />
+              )
+            } 
+          />
+          <Route 
+            path="/merchant" 
+            element={
+              currentUser && currentUser.type === "merchant" ? (
+                <MerchantDashboard merchant={currentUser} onLogout={handleLogout} />
               ) : (
                 <Navigate to="/" replace />
               )
